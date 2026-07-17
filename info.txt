@@ -1,1 +1,0 @@
-backend-core: Para la API y los scripts SQL iniciales.
