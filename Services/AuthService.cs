@@ -1,28 +1,33 @@
+using System.Data.Common;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using raft_backend.Configuration;
 using raft_backend.Database;
 using raft_backend.DTOs;
-using raft_backend.Models;
 
 namespace raft_backend.Services;
 
 public class AuthService : IAuthService
 {
-    private readonly RaftDbContext _context;
+    private readonly ISqlStoredProcedureExecutor _executor;
+    private readonly IMySqlProvisioningService _provisioningService;
+    private readonly IAuditEventService _auditEventService;
     private readonly JwtOptions _jwtOptions;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
-        RaftDbContext context,
+        ISqlStoredProcedureExecutor executor,
+        IMySqlProvisioningService provisioningService,
+        IAuditEventService auditEventService,
         IOptions<JwtOptions> jwtOptions,
         ILogger<AuthService> logger)
     {
-        _context = context;
+        _executor = executor;
+        _provisioningService = provisioningService;
+        _auditEventService = auditEventService;
         _jwtOptions = jwtOptions.Value;
         _logger = logger;
     }
@@ -41,54 +46,48 @@ public class AuthService : IAuthService
         var name = GetName(principal, email, providerUserId);
         var avatarUrl = GetAvatarUrl(principal);
 
-        var user = await _context.Users
-            .IgnoreQueryFilters()
-            .SingleOrDefaultAsync(x => x.Provider == normalizedProvider && x.ProviderUserId == providerUserId, cancellationToken);
-
-        if (user is null)
-        {
-            user = new User
+        // The lookup/insert/update decision, and the login audit entry, all happen inside
+        // this single SP (usp_Users_UpsertFromOAuth) — this is the one real business flow
+        // in the app, so it must be database-centric like everything else.
+        var result = await _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.Users_UpsertFromOAuth,
+            command =>
             {
-                Name = name,
-                Email = email,
-                AvatarUrl = avatarUrl,
-                Provider = normalizedProvider,
-                ProviderUserId = providerUserId,
-                Created_at = DateTime.UtcNow,
-                LastLogin = DateTime.UtcNow
-            };
+                command.AddParameter("@Provider", normalizedProvider);
+                command.AddParameter("@ProviderUserId", providerUserId);
+                command.AddParameter("@Name", name);
+                command.AddParameter("@Email", email);
+                command.AddParameter("@AvatarUrl", avatarUrl);
+            },
+            MapUpsertResult,
+            cancellationToken);
 
-            _context.Users.Add(user);
-        }
-        else
+        if (result is null)
         {
-            user.Name = name;
-            user.Email = email;
-            user.AvatarUrl = avatarUrl;
-            user.Provider = normalizedProvider;
-            user.ProviderUserId = providerUserId;
-            user.LastLogin = DateTime.UtcNow;
-            user.Updated_at = DateTime.UtcNow;
-            user.Deleted_at = null;
+            throw new InvalidOperationException($"{StoredProcedureNames.Users_UpsertFromOAuth} did not return a user row.");
         }
 
-        _context.AuditEvents.Add(new AuditEvent
-        {
-            User = user,
-            EventType = "Login",
-            Description = $"OAuth login completed with {normalizedProvider}.",
-            AdditionalData = $$"""{"provider":"{{normalizedProvider}}","providerUserId":"{{providerUserId}}"}""",
-            Created_at = DateTime.UtcNow
-        });
+        var (user, isNewUser) = (result.User, result.IsNewUser);
 
-        try
+        if (isNewUser)
         {
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist OAuth login for provider {Provider} and subject {ProviderUserId}", normalizedProvider, providerUserId);
-            throw;
+            // A transient provisioning failure must never block authentication: the user
+            // still gets their JWT, and the dashboard simply shows "no database yet" until
+            // the lifecycle job (Fase 3) retries provisioning for users without one.
+            try
+            {
+                await _provisioningService.ProvisionDatabaseAsync(user.Id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "MySQL provisioning failed for new user {UserId}", user.Id);
+                await _auditEventService.CreateAsync(new AuditEventCreateDto
+                {
+                    UserId = user.Id,
+                    EventType = "ProvisioningFailed",
+                    Description = "Automatic MySQL database provisioning failed after first login."
+                }, cancellationToken);
+            }
         }
 
         var token = CreateJwt(user);
@@ -98,23 +97,33 @@ public class AuthService : IAuthService
             AccessToken = token.Token,
             ExpiresAt = token.ExpiresAt,
             Provider = normalizedProvider,
-            User = new UserReadDto
-            {
-                Id = user.Id,
-                Name = user.Name,
-                Email = user.Email,
-                AvatarUrl = user.AvatarUrl,
-                Provider = user.Provider,
-                ProviderUserId = user.ProviderUserId,
-                CreatedAt = user.Created_at,
-                UpdatedAt = user.Updated_at,
-                DeletedAt = user.Deleted_at,
-                LastLogin = user.LastLogin
-            }
+            User = user
         };
     }
 
-    private JwtTokenResult CreateJwt(User user)
+    private static OAuthUpsertResult MapUpsertResult(DbDataReader reader)
+    {
+        var user = new UserReadDto
+        {
+            Id = reader.GetInt32Value("Id"),
+            Name = reader.GetStringOrEmpty("Name"),
+            Email = reader.GetStringOrEmpty("Email"),
+            AvatarUrl = reader.GetNullableString("AvatarUrl"),
+            Provider = reader.GetStringOrEmpty("Provider"),
+            ProviderUserId = reader.GetStringOrEmpty("ProviderUserId"),
+            Role = reader.GetStringOrEmpty("Role"),
+            CreatedAt = reader.GetDateTimeValue("CreatedAt"),
+            UpdatedAt = reader.GetNullableDateTime("UpdatedAt"),
+            DeletedAt = reader.GetNullableDateTime("DeletedAt"),
+            LastLogin = reader.GetNullableDateTime("LastLogin")
+        };
+
+        return new OAuthUpsertResult(user, reader.GetBooleanValue("IsNewUser"));
+    }
+
+    private sealed record OAuthUpsertResult(UserReadDto User, bool IsNewUser);
+
+    private JwtTokenResult CreateJwt(UserReadDto user)
     {
         var expiresAt = DateTime.UtcNow.AddMinutes(_jwtOptions.ExpirationMinutes);
         var claims = new List<Claim>
@@ -122,6 +131,7 @@ public class AuthService : IAuthService
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new(ClaimTypes.Name, user.Name),
             new(ClaimTypes.Email, user.Email),
+            new(ClaimTypes.Role, user.Role),
             new("provider", user.Provider),
             new("provider_user_id", user.ProviderUserId)
         };

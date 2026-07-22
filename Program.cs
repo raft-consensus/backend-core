@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -20,7 +21,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddControllers();
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminOnly", policy => policy.RequireRole("Admin"));
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -51,10 +55,51 @@ builder.Services.AddRateLimiter(options =>
                 AutoReplenishment = true
             });
     });
+
+    options.AddPolicy("credential-reveal", context =>
+    {
+        var partitionKey = context.User.Identity?.Name
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
 });
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth"));
+builder.Services.Configure<MySqlProvisioningOptions>(builder.Configuration.GetSection("MySqlProvisioning"));
+builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
+builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
+
+var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
+    ?? throw new InvalidOperationException("Missing configuration section: Frontend");
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+    {
+        policy.WithOrigins(frontendOptions.Origin)
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
+var configuredKeysPath = builder.Configuration["DataProtection:KeysPath"];
+var dataProtectionKeysPath = string.IsNullOrWhiteSpace(configuredKeysPath)
+    ? Path.Combine(builder.Environment.ContentRootPath, "keys")
+    : configuredKeysPath;
+
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath))
+    .SetApplicationName("raft-backend");
 
 var raftConnectionString = builder.Configuration.GetConnectionString("RaftDb")
     ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:RaftDb");
@@ -161,6 +206,7 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
+builder.Services.AddScoped<IMySqlCommandExecutor, MySqlCommandExecutor>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();
@@ -168,6 +214,9 @@ builder.Services.AddScoped<IAccessCredentialService, AccessCredentialService>();
 builder.Services.AddScoped<IAuditEventService, AuditEventService>();
 builder.Services.AddScoped<IPlatformMetricsService, PlatformMetricsService>();
 builder.Services.AddScoped<IUserDashboardService, UserDashboardService>();
+builder.Services.AddSingleton<ISecurePasswordGenerator, SecurePasswordGenerator>();
+builder.Services.AddScoped<IMySqlProvisioningService, MySqlProvisioningService>();
+builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
 
 var app = builder.Build();
 
@@ -179,6 +228,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseCors("Frontend");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

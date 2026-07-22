@@ -8,6 +8,7 @@ public class User
     public string? AvatarUrl { get; set; }
     public string Provider { get; set; } = string.Empty; // "Google" | "GitHub"
     public string ProviderUserId { get; set; } = string.Empty; // unique identifier provided by Google/GitHub (sub / id)
+    public string Role { get; set; } = "User"; // "User" | "Admin"
     public DateTime Created_at { get; set; }
     public DateTime? Updated_at { get; set; }
     public DateTime? Deleted_at { get; set; }

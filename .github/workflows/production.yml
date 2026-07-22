@@ -47,6 +47,22 @@ jobs:
     environment: production
 
     steps:
+      # MySQL (and SQL Server/Postgres/Mongo) run as independent containers already managed
+      # on the VPS, outside this repo — docker-compose.yml here only declares the backend
+      # service itself, so the VPS just needs that one file, not any init scripts.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy compose file to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          source: "docker-compose.yml"
+          target: "/app/${{ github.event.repository.name }}/"
+
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -56,24 +72,21 @@ jobs:
           port: 22
           envs: APP_SETTINGS,GH_TOKEN,GH_REPOSITORY,CONTAINER_NAME
           script: |
+            set -e
+            cd /app/$CONTAINER_NAME
+
             echo "$GH_TOKEN" | docker login ghcr.io -u github-actions --password-stdin
 
-            docker pull ghcr.io/$GH_REPOSITORY:latest
+            echo "$APP_SETTINGS" > appsettings.json
 
-            docker stop $CONTAINER_NAME || true
-            docker rm $CONTAINER_NAME || true
+            cat > .env <<EOF
+            BACKEND_IMAGE=ghcr.io/$GH_REPOSITORY:latest
+            CONTAINER_NAME=$CONTAINER_NAME
+            EOF
 
-            mkdir -p /app/$CONTAINER_NAME
-            echo "$APP_SETTINGS" > /app/$CONTAINER_NAME/appsettings.json
-
-            docker run -d \
-              --name $CONTAINER_NAME \
-              --restart unless-stopped \
-              -p 8061:8080 \
-              -v /app/$CONTAINER_NAME/appsettings.json:/app/appsettings.json:ro \
-              ghcr.io/$GH_REPOSITORY:latest
-
-            docker ps | grep $CONTAINER_NAME
+            docker compose pull backend
+            docker compose up -d backend
+            docker compose ps
         env:
           APP_SETTINGS: ${{ secrets.APP_SETTINGS }}
           GH_TOKEN: ${{ secrets.TOKEN }}

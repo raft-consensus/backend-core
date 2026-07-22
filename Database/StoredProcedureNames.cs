@@ -7,6 +7,7 @@ public static class StoredProcedureNames
     public const string Users_Create = "usp_Users_Create";
     public const string Users_Update = "usp_Users_Update";
     public const string Users_SoftDelete = "usp_Users_SoftDelete";
+    public const string Users_UpsertFromOAuth = "usp_Users_UpsertFromOAuth";
 
     public const string DatabaseInstances_GetAll = "usp_DatabaseInstances_GetAll";
     public const string DatabaseInstances_GetById = "usp_DatabaseInstances_GetById";
@@ -20,6 +21,7 @@ public static class StoredProcedureNames
     public const string AccessCredentials_Create = "usp_AccessCredentials_Create";
     public const string AccessCredentials_Update = "usp_AccessCredentials_Update";
     public const string AccessCredentials_SoftDelete = "usp_AccessCredentials_SoftDelete";
+    public const string AccessCredentials_GetDecryptableByOwner = "usp_AccessCredentials_GetDecryptableByOwner";
 
     public const string AuditEvents_GetAll = "usp_AuditEvents_GetAll";
     public const string AuditEvents_GetById = "usp_AuditEvents_GetById";
@@ -29,4 +31,10 @@ public static class StoredProcedureNames
 
     public const string PlatformMetrics_Get = "usp_PlatformMetrics_Get";
     public const string UserDashboard_GetByUserId = "usp_UserDashboard_GetByUserId";
+
+    public const string DatabaseInstances_UpdateStatus = "usp_DatabaseInstances_UpdateStatus";
+    public const string DatabaseInstances_GetDueForPause = "usp_DatabaseInstances_GetDueForPause";
+    public const string DatabaseInstances_GetDueForDelete = "usp_DatabaseInstances_GetDueForDelete";
+    public const string DatabaseInstances_UpdateUsedSpace = "usp_DatabaseInstances_UpdateUsedSpace";
+    public const string DatabaseInstances_TouchActivityByDatabaseUser = "usp_DatabaseInstances_TouchActivityByDatabaseUser";
 }

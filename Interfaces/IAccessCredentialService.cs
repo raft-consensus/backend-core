@@ -10,4 +10,8 @@ public interface IAccessCredentialService
     Task<AccessCredentialReadDto?> CreateAsync(AccessCredentialCreateDto dto, CancellationToken cancellationToken = default);
     Task<AccessCredentialReadDto?> UpdateAsync(int id, AccessCredentialUpdateDto dto, CancellationToken cancellationToken = default);
     Task<bool> SoftDeleteAsync(int id, CancellationToken cancellationToken = default);
+
+    // Owner-scoped: returns the decrypted password only if databaseInstanceId belongs to
+    // userId (ownership check lives in usp_AccessCredentials_GetDecryptableByOwner).
+    Task<AccessCredentialRevealDto?> RevealPasswordAsync(int userId, int databaseInstanceId, CancellationToken cancellationToken = default);
 }

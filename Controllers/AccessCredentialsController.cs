@@ -7,7 +7,7 @@ using raft_backend.Services;
 namespace raft_backend.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Policy = "AdminOnly")]
 [Route("api/access-credentials")]
 public class AccessCredentialsController : ControllerBase
 {

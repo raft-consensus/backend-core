@@ -1,4 +1,6 @@
 using System.Data.Common;
+using Microsoft.AspNetCore.DataProtection;
+using raft_backend.Configuration;
 using raft_backend.Database;
 using raft_backend.DTOs;
 
@@ -7,10 +9,12 @@ namespace raft_backend.Services;
 public class AccessCredentialService : IAccessCredentialService
 {
     private readonly ISqlStoredProcedureExecutor _executor;
+    private readonly IDataProtectionProvider _dataProtectionProvider;
 
-    public AccessCredentialService(ISqlStoredProcedureExecutor executor)
+    public AccessCredentialService(ISqlStoredProcedureExecutor executor, IDataProtectionProvider dataProtectionProvider)
     {
         _executor = executor;
+        _dataProtectionProvider = dataProtectionProvider;
     }
 
     public Task<IReadOnlyList<AccessCredentialReadDto>> GetAllAsync(CancellationToken cancellationToken = default)
@@ -74,6 +78,32 @@ public class AccessCredentialService : IAccessCredentialService
             cancellationToken);
 
         return rows > 0;
+    }
+
+    public async Task<AccessCredentialRevealDto?> RevealPasswordAsync(int userId, int databaseInstanceId, CancellationToken cancellationToken = default)
+    {
+        var encryptedPassword = await _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.AccessCredentials_GetDecryptableByOwner,
+            command =>
+            {
+                command.AddParameter("@UserId", userId);
+                command.AddParameter("@DatabaseInstanceId", databaseInstanceId);
+            },
+            reader => reader.GetStringOrEmpty("EncryptedPassword"),
+            cancellationToken);
+
+        if (string.IsNullOrEmpty(encryptedPassword))
+        {
+            return null;
+        }
+
+        var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
+
+        return new AccessCredentialRevealDto
+        {
+            DatabaseInstanceId = databaseInstanceId,
+            Password = protector.Unprotect(encryptedPassword)
+        };
     }
 
     private static AccessCredentialReadDto Map(DbDataReader reader)

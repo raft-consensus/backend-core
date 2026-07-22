@@ -53,4 +53,9 @@ public static class SqlReaderExtensions
     {
         return Convert.ToDecimal(reader[name]);
     }
+
+    public static bool GetBooleanValue(this DbDataReader reader, string name)
+    {
+        return Convert.ToBoolean(reader[name]);
+    }
 }

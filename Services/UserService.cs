@@ -87,6 +87,7 @@ public class UserService : IUserService
             AvatarUrl = reader.GetNullableString("AvatarUrl"),
             Provider = reader.GetStringOrEmpty("Provider"),
             ProviderUserId = reader.GetStringOrEmpty("ProviderUserId"),
+            Role = reader.GetStringOrEmpty("Role"),
             CreatedAt = reader.GetDateTimeValue("CreatedAt"),
             UpdatedAt = reader.GetNullableDateTime("UpdatedAt"),
             DeletedAt = reader.GetNullableDateTime("DeletedAt"),

@@ -28,6 +28,7 @@ public class RaftDbContext : DbContext
             entity.Property(x => x.AvatarUrl).HasMaxLength(2048);
             entity.Property(x => x.Provider).HasMaxLength(50).IsRequired();
             entity.Property(x => x.ProviderUserId).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Role).HasMaxLength(20).IsRequired().HasDefaultValue("User");
             entity.Property(x => x.Created_at)
                 .HasColumnName("Created_at")
                 .HasDefaultValueSql("SYSUTCDATETIME()");

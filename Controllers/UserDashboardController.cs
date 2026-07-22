@@ -7,7 +7,7 @@ using raft_backend.Services;
 namespace raft_backend.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Policy = "AdminOnly")]
 [Route("api/users/{userId:int}/dashboard")]
 public class UserDashboardController : ControllerBase
 {

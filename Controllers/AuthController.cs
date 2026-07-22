@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using raft_backend.Configuration;
 using raft_backend.DTOs;
 using raft_backend.Response;
@@ -15,11 +16,13 @@ namespace raft_backend.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly FrontendOptions _frontendOptions;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(IAuthService authService, ILogger<AuthController> logger)
+    public AuthController(IAuthService authService, IOptions<FrontendOptions> frontendOptions, ILogger<AuthController> logger)
     {
         _authService = authService;
+        _frontendOptions = frontendOptions.Value;
         _logger = logger;
     }
 
@@ -44,18 +47,17 @@ public class AuthController : ControllerBase
         }, scheme);
     }
 
+    // This endpoint is reached via a full browser navigation (OAuth redirect chain), never
+    // via fetch/XHR from the SPA — so it must hand off with an HTTP redirect back to the
+    // frontend, not a JSON body the frontend could never intercept.
     [HttpGet("callback/{provider}")]
     [AllowAnonymous]
-    public async Task<ActionResult<ServiceResponse<AuthResponseDto>>> Callback(string provider, CancellationToken cancellationToken)
+    public async Task<IActionResult> Callback(string provider, CancellationToken cancellationToken)
     {
         var authResult = await HttpContext.AuthenticateAsync(AuthSchemes.External);
         if (!authResult.Succeeded || authResult.Principal is null)
         {
-            return Unauthorized(new ServiceResponse<AuthResponseDto>
-            {
-                Success = false,
-                Message = "External authentication could not be completed."
-            });
+            return RedirectToFrontendWithError("oauth_failed");
         }
 
         try
@@ -65,29 +67,30 @@ public class AuthController : ControllerBase
 
             if (result is null)
             {
-                return BadRequest(new ServiceResponse<AuthResponseDto>
-                {
-                    Success = false,
-                    Message = "Unsupported OAuth provider or invalid external identity."
-                });
+                return RedirectToFrontendWithError("unsupported_provider");
             }
 
-            return Ok(new ServiceResponse<AuthResponseDto>
-            {
-                Success = true,
-                Message = "OAuth authentication completed successfully.",
-                Data = result
-            });
+            return RedirectToFrontendWithToken(result);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "OAuth callback failed for provider {Provider}", provider);
-            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<AuthResponseDto>
-            {
-                Success = false,
-                Message = "OAuth login failed."
-            });
+            return RedirectToFrontendWithError("login_failed");
         }
+    }
+
+    private IActionResult RedirectToFrontendWithToken(AuthResponseDto result)
+    {
+        var fragment = $"access_token={Uri.EscapeDataString(result.AccessToken)}" +
+            $"&expires_at={Uri.EscapeDataString(result.ExpiresAt.ToString("o"))}" +
+            $"&provider={Uri.EscapeDataString(result.Provider)}";
+
+        return Redirect($"{_frontendOptions.CallbackUrl}#{fragment}");
+    }
+
+    private IActionResult RedirectToFrontendWithError(string errorCode)
+    {
+        return Redirect($"{_frontendOptions.CallbackUrl}#error={Uri.EscapeDataString(errorCode)}");
     }
 
     private static string? GetScheme(string provider)

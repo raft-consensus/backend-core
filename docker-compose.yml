@@ -1,0 +1,17 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-raft-backend:local}
+    build:
+      context: .
+    container_name: ${CONTAINER_NAME:-raft-backend}
+    restart: unless-stopped
+    ports:
+      - "8061:8080"
+    volumes:
+      - ./appsettings.json:/app/appsettings.json:ro
+      - raft-backend-keys:/app/keys
+    environment:
+      DataProtection__KeysPath: /app/keys
+
+volumes:
+  raft-backend-keys:
