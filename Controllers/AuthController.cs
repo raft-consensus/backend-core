@@ -46,6 +46,50 @@ public class AuthController : ControllerBase
             RedirectUri = redirectUri
         }, scheme);
     }
+    
+    [HttpPost("register")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Register(RegisterDto dto, CancellationToken cancellationToken)
+    {
+        var result = await _authService.RegisterWithPasswordAsync(dto, cancellationToken);
+        if (result is null)
+        {
+            return Conflict(new ServiceResponse<object>
+            {
+                Success = false,
+                Message = "That email is already registered."
+            });
+        }
+
+        return Ok(new ServiceResponse<AuthResponseDto>
+        {
+            Success = true,
+            Message = "User registered successfully.",
+            Data = result
+        });
+    }
+
+    [HttpPost("login")]
+    [AllowAnonymous]
+    public async Task<IActionResult> LoginWithPassword(LoginDto dto, CancellationToken cancellationToken)
+    {
+        var result = await _authService.LoginWithPasswordAsync(dto, cancellationToken);
+        if (result is null)
+        {
+            return Unauthorized(new ServiceResponse<object>
+            {
+                Success = false,
+                Message = "Invalid email or password."
+            });
+        }
+
+        return Ok(new ServiceResponse<AuthResponseDto>
+        {
+            Success = true,
+            Message = "Login successful.",
+            Data = result
+        });
+    }
 
     // This endpoint is reached via a full browser navigation (OAuth redirect chain), never
     // via fetch/XHR from the SPA — so it must hand off with an HTTP redirect back to the

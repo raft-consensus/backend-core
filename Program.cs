@@ -16,6 +16,7 @@ using raft_backend.Database;
 using raft_backend.Middleware;
 using raft_backend.Services;
 using System.Threading.RateLimiting;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -82,13 +83,19 @@ builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Fr
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Frontend");
 
+var origins = builder.Configuration
+    .GetSection("Frontend:Origins")
+    .Get<string[]>() ?? [];
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
     {
-        policy.WithOrigins(frontendOptions.Origin)
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        policy
+            .WithOrigins(origins)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -220,11 +227,8 @@ builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+app.MapOpenApi();
+app.MapScalarApiReference();
 
 app.UseHttpsRedirection();
 app.UseMiddleware<ExceptionHandlingMiddleware>();

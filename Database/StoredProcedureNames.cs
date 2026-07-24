@@ -8,6 +8,8 @@ public static class StoredProcedureNames
     public const string Users_Update = "usp_Users_Update";
     public const string Users_SoftDelete = "usp_Users_SoftDelete";
     public const string Users_UpsertFromOAuth = "usp_Users_UpsertFromOAuth";
+    public const string Users_RegisterWithPassword = "usp_Users_RegisterWithPassword";
+    public const string Users_GetByEmailForLogin = "usp_Users_GetByEmailForLogin";
 
     public const string DatabaseInstances_GetAll = "usp_DatabaseInstances_GetAll";
     public const string DatabaseInstances_GetById = "usp_DatabaseInstances_GetById";

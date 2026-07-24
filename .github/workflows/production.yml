@@ -57,7 +57,7 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: root
+          username: ${{ secrets.USER }}
           key: ${{ secrets.SSH_KEY }}
           port: 22
           source: "docker-compose.yml"
@@ -67,7 +67,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: root
+          username: ${{ secrets.USER }}
           key: ${{ secrets.SSH_KEY }}
           port: 22
           envs: APP_SETTINGS,GH_TOKEN,GH_REPOSITORY,CONTAINER_NAME

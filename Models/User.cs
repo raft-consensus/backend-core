@@ -5,6 +5,8 @@ public class User
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
+    
+    public string? PasswordHash { get; set; }
     public string? AvatarUrl { get; set; }
     public string Provider { get; set; } = string.Empty; // "Google" | "GitHub"
     public string ProviderUserId { get; set; } = string.Empty; // unique identifier provided by Google/GitHub (sub / id)

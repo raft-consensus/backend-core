@@ -101,27 +101,121 @@ public class AuthService : IAuthService
         };
     }
 
+    public async Task<AuthResponseDto?> RegisterWithPasswordAsync(RegisterDto dto, CancellationToken cancellationToken = default)
+    {
+        var passwordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+
+        var user = await _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.Users_RegisterWithPassword,
+            command =>
+            {
+                command.AddParameter("@Name", dto.Name);
+                command.AddParameter("@Email", dto.Email);
+                command.AddParameter("@PasswordHash", passwordHash);
+            },
+            MapUserReadDto,
+            cancellationToken);
+
+        if (user is null)
+        {
+            // Email ya registrado: el SP no devolvió fila.
+            return null;
+        }
+        
+        try
+        {
+            await _provisioningService.ProvisionDatabaseAsync(user.Id, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "MySQL provisioning failed for new user {UserId}", user.Id);
+            await _auditEventService.CreateAsync(new AuditEventCreateDto
+            {
+                UserId = user.Id,
+                EventType = "ProvisioningFailed",
+                Description = "Automatic MySQL database provisioning failed after first login."
+            }, cancellationToken);
+        }
+
+        var token = CreateJwt(user);
+
+        return new AuthResponseDto
+        {
+            AccessToken = token.Token,
+            ExpiresAt = token.ExpiresAt,
+            Provider = "Password",
+            User = user
+        };
+    }
+
+    public async Task<AuthResponseDto?> LoginWithPasswordAsync(LoginDto dto, CancellationToken cancellationToken = default)
+    {
+        var result = await _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.Users_GetByEmailForLogin,
+            command => command.AddParameter("@Email", dto.Email),
+            MapLoginLookupResult,
+            cancellationToken);
+
+        if (result is null)
+        {
+            return null; // no existe ese email
+        }
+
+        if (result.PasswordHash is null)
+        {
+            return null; // se registró por OAuth y nunca tuvo password
+        }
+
+        if (!BCrypt.Net.BCrypt.Verify(dto.Password, result.PasswordHash))
+        {
+            return null; // password incorrecto
+        }
+
+        var token = CreateJwt(result.User);
+
+        return new AuthResponseDto
+        {
+            AccessToken = token.Token,
+            ExpiresAt = token.ExpiresAt,
+            Provider = "Password",
+            User = result.User
+        };
+    }
+
     private static OAuthUpsertResult MapUpsertResult(DbDataReader reader)
     {
-        var user = new UserReadDto
+        var user = MapUserReadDto(reader);
+        return new OAuthUpsertResult(user, reader.GetBooleanValue("IsNewUser"));
+    }
+
+    private static UserReadDto MapUserReadDto(DbDataReader reader)
+    {
+        return new UserReadDto
         {
             Id = reader.GetInt32Value("Id"),
             Name = reader.GetStringOrEmpty("Name"),
             Email = reader.GetStringOrEmpty("Email"),
             AvatarUrl = reader.GetNullableString("AvatarUrl"),
-            Provider = reader.GetStringOrEmpty("Provider"),
-            ProviderUserId = reader.GetStringOrEmpty("ProviderUserId"),
+            Provider = reader.GetNullableString("Provider") ?? string.Empty,
+            ProviderUserId = reader.GetNullableString("ProviderUserId") ?? string.Empty,
             Role = reader.GetStringOrEmpty("Role"),
             CreatedAt = reader.GetDateTimeValue("CreatedAt"),
             UpdatedAt = reader.GetNullableDateTime("UpdatedAt"),
             DeletedAt = reader.GetNullableDateTime("DeletedAt"),
             LastLogin = reader.GetNullableDateTime("LastLogin")
         };
+    }
 
-        return new OAuthUpsertResult(user, reader.GetBooleanValue("IsNewUser"));
+    private static LoginLookupResult MapLoginLookupResult(DbDataReader reader)
+    {
+        var user = MapUserReadDto(reader);
+        var passwordHash = reader.GetNullableString("PasswordHash");
+        return new LoginLookupResult(user, passwordHash);
     }
 
     private sealed record OAuthUpsertResult(UserReadDto User, bool IsNewUser);
+
+    private sealed record LoginLookupResult(UserReadDto User, string? PasswordHash);
 
     private JwtTokenResult CreateJwt(UserReadDto user)
     {
