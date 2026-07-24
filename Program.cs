@@ -17,6 +17,7 @@ using raft_backend.Middleware;
 using raft_backend.Services;
 using System.Threading.RateLimiting;
 using Scalar.AspNetCore;
+using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -226,6 +227,11 @@ builder.Services.AddScoped<IMySqlProvisioningService, MySqlProvisioningService>(
 builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
 
 var app = builder.Build();
+
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
 
 app.MapOpenApi();
 app.MapScalarApiReference();
