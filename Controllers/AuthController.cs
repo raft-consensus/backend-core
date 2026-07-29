@@ -129,12 +129,12 @@ public class AuthController : ControllerBase
             $"&expires_at={Uri.EscapeDataString(result.ExpiresAt.ToString("o"))}" +
             $"&provider={Uri.EscapeDataString(result.Provider)}";
 
-        return Redirect($"{_frontendOptions.CallbackUrl}#{fragment}");
+        return Redirect($"{_frontendOptions.CallbackUrl}?{fragment}");
     }
 
     private IActionResult RedirectToFrontendWithError(string errorCode)
     {
-        return Redirect($"{_frontendOptions.CallbackUrl}#error={Uri.EscapeDataString(errorCode)}");
+        return Redirect($"{_frontendOptions.CallbackUrl}?error={Uri.EscapeDataString(errorCode)}");
     }
 
     private static string? GetScheme(string provider)
