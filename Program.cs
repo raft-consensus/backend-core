@@ -73,6 +73,24 @@ builder.Services.AddRateLimiter(options =>
                 AutoReplenishment = true
             });
     });
+
+    // Provisioning hits the real MySQL server (CREATE DATABASE/USER), so it's throttled
+    // per-user on a longer window than credential-reveal, not per-minute.
+    options.AddPolicy("database-provisioning", context =>
+    {
+        var partitionKey = context.User.Identity?.Name
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
 });
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
