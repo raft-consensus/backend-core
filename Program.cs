@@ -75,7 +75,7 @@ builder.Services.AddRateLimiter(options =>
     });
 
     // Provisioning hits the real MySQL server (CREATE DATABASE/USER), so it's throttled
-    // per-user on a longer window than credential-reveal, not per-minute.
+    // per-user to keep abuse low while still allowing a few retries per minute.
     options.AddPolicy("database-provisioning", context =>
     {
         var partitionKey = context.User.Identity?.Name
@@ -86,7 +86,7 @@ builder.Services.AddRateLimiter(options =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 3,
-                Window = TimeSpan.FromMinutes(10),
+                Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 AutoReplenishment = true
             });
@@ -267,5 +267,4 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
-
 
