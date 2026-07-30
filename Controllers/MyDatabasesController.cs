@@ -24,15 +24,15 @@ public class MyDatabasesController : ControllerBase
     private readonly IUserDashboardService _dashboardService;
     private readonly IAccessCredentialService _accessCredentialService;
     private readonly IAuditEventService _auditEventService;
-    private readonly IMySqlProvisioningService _provisioningService;
-    private readonly MySqlProvisioningOptions _provisioningOptions;
+    private readonly ISqlServerProvisioningService _provisioningService;
+    private readonly SqlServerProvisioningOptions _provisioningOptions;
 
     public MyDatabasesController(
         IUserDashboardService dashboardService,
         IAccessCredentialService accessCredentialService,
         IAuditEventService auditEventService,
-        IMySqlProvisioningService provisioningService,
-        IOptions<MySqlProvisioningOptions> provisioningOptions)
+        ISqlServerProvisioningService provisioningService,
+        IOptions<SqlServerProvisioningOptions> provisioningOptions)
     {
         _dashboardService = dashboardService;
         _accessCredentialService = accessCredentialService;
@@ -57,21 +57,32 @@ public class MyDatabasesController : ControllerBase
 
     [HttpPost]
     [EnableRateLimiting("database-provisioning")]
-    public async Task<ActionResult<ServiceResponse<MySqlProvisioningResultDto>>> CreateDatabase(CancellationToken cancellationToken)
+    public async Task<ActionResult<ServiceResponse<SqlServerProvisioningResultDto>>> CreateDatabase(
+        DatabaseProvisioningRequestDto request,
+        CancellationToken cancellationToken)
     {
         var userId = GetUserId();
+
+        if (!string.Equals(request.Engine?.Trim(), "SQL Server", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new ServiceResponse<SqlServerProvisioningResultDto>
+            {
+                Success = false,
+                Message = "The requested engine is offered by another team and is not yet integrated."
+            });
+        }
 
         var existing = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
         if (existing.Count >= _provisioningOptions.MaxDatabasesPerUser)
         {
-            return Conflict(new ServiceResponse<MySqlProvisioningResultDto>
+            return Conflict(new ServiceResponse<SqlServerProvisioningResultDto>
             {
                 Success = false,
                 Message = $"You already have {existing.Count} database(s). The maximum allowed per account is {_provisioningOptions.MaxDatabasesPerUser}."
             });
         }
 
-        MySqlProvisioningResultDto result;
+        SqlServerProvisioningResultDto result;
         try
         {
             result = await _provisioningService.ProvisionDatabaseAsync(userId, cancellationToken);
@@ -82,10 +93,10 @@ public class MyDatabasesController : ControllerBase
             {
                 UserId = userId,
                 EventType = "ProvisioningFailed",
-                Description = "Self-service MySQL database provisioning failed."
+                Description = "Self-service SQL Server database provisioning failed."
             }, cancellationToken);
 
-            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<MySqlProvisioningResultDto>
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<SqlServerProvisioningResultDto>
             {
                 Success = false,
                 Message = "The database could not be provisioned. Please try again in a few minutes."
@@ -94,7 +105,7 @@ public class MyDatabasesController : ControllerBase
 
         // The password is only ever returned here, in plaintext, at creation time — it is
         // encrypted at rest afterward and can only be retrieved again via RevealPassword.
-        return CreatedAtAction(nameof(GetMyDatabases), null, new ServiceResponse<MySqlProvisioningResultDto>
+        return CreatedAtAction(nameof(GetMyDatabases), null, new ServiceResponse<SqlServerProvisioningResultDto>
         {
             Success = true,
             Message = "Database provisioned successfully. Save the password now — it will not be shown in full again.",

@@ -13,14 +13,14 @@ namespace raft_backend.Services;
 public class AuthService : IAuthService
 {
     private readonly ISqlStoredProcedureExecutor _executor;
-    private readonly IMySqlProvisioningService _provisioningService;
+    private readonly ISqlServerProvisioningService _provisioningService;
     private readonly IAuditEventService _auditEventService;
     private readonly JwtOptions _jwtOptions;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
         ISqlStoredProcedureExecutor executor,
-        IMySqlProvisioningService provisioningService,
+        ISqlServerProvisioningService provisioningService,
         IAuditEventService auditEventService,
         IOptions<JwtOptions> jwtOptions,
         ILogger<AuthService> logger)
@@ -80,12 +80,12 @@ public class AuthService : IAuthService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "MySQL provisioning failed for new user {UserId}", user.Id);
+                _logger.LogError(ex, "SQL Server provisioning failed for new user {UserId}", user.Id);
                 await _auditEventService.CreateAsync(new AuditEventCreateDto
                 {
                     UserId = user.Id,
                     EventType = "ProvisioningFailed",
-                    Description = "Automatic MySQL database provisioning failed after first login."
+                    Description = "Automatic SQL Server database provisioning failed after first login."
                 }, cancellationToken);
             }
         }
@@ -128,12 +128,12 @@ public class AuthService : IAuthService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "MySQL provisioning failed for new user {UserId}", user.Id);
+            _logger.LogError(ex, "SQL Server provisioning failed for new user {UserId}", user.Id);
             await _auditEventService.CreateAsync(new AuditEventCreateDto
             {
                 UserId = user.Id,
                 EventType = "ProvisioningFailed",
-                Description = "Automatic MySQL database provisioning failed after first login."
+                Description = "Automatic SQL Server database provisioning failed after first login."
             }, cancellationToken);
         }
 
