@@ -19,3 +19,9 @@ public class AccessCredentialReadDto
     public DateTime? UpdatedAt { get; set; }
     public DateTime? DeletedAt { get; set; }
 }
+
+public class AccessCredentialRevealDto
+{
+    public int DatabaseInstanceId { get; set; }
+    public string Password { get; set; } = string.Empty;
+}

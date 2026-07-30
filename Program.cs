@@ -95,7 +95,6 @@ builder.Services.AddRateLimiter(options =>
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth"));
-builder.Services.Configure<MySqlProvisioningOptions>(builder.Configuration.GetSection("MySqlProvisioning"));
 builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
 builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
 
@@ -130,9 +129,6 @@ builder.Services.AddDataProtection()
 var raftConnectionString = builder.Configuration.GetConnectionString("RaftDb")
     ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:RaftDb");
 
-var mySqlProvisioningConnectionString = builder.Configuration.GetConnectionString("MySqlProvisioning")
-    ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:MySqlProvisioning");
-
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Jwt");
 
@@ -145,11 +141,6 @@ builder.Services.AddDbContext<RaftDbContext>(options =>
     {
         sqlOptions.EnableRetryOnFailure();
     });
-});
-
-builder.Services.AddDbContext<MySqlDbContext>(options =>
-{
-    options.UseMySQL(mySqlProvisioningConnectionString);
 });
 
 builder.Services.AddAuthentication(options =>
@@ -232,7 +223,6 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
-builder.Services.AddScoped<IMySqlCommandExecutor, MySqlCommandExecutor>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();
@@ -241,7 +231,6 @@ builder.Services.AddScoped<IAuditEventService, AuditEventService>();
 builder.Services.AddScoped<IPlatformMetricsService, PlatformMetricsService>();
 builder.Services.AddScoped<IUserDashboardService, UserDashboardService>();
 builder.Services.AddSingleton<ISecurePasswordGenerator, SecurePasswordGenerator>();
-builder.Services.AddScoped<IMySqlProvisioningService, MySqlProvisioningService>();
 builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
 
 var app = builder.Build();
@@ -267,4 +256,3 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
-
