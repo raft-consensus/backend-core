@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
 using raft_backend.Configuration;
 using raft_backend.Database;
@@ -129,6 +130,9 @@ builder.Services.AddDataProtection()
 var raftConnectionString = builder.Configuration.GetConnectionString("RaftDb")
     ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:RaftDb");
 
+var sqlServerProvisioningConnectionString = builder.Configuration.GetConnectionString("SqlServerProvisioning")
+    ?? BuildProvisioningConnectionString(raftConnectionString);
+
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Jwt");
 
@@ -138,6 +142,14 @@ var oauthOptions = builder.Configuration.GetSection("OAuth").Get<OAuthOptions>()
 builder.Services.AddDbContext<RaftDbContext>(options =>
 {
     options.UseSqlServer(raftConnectionString, sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure();
+    });
+});
+
+builder.Services.AddDbContext<SqlServerProvisioningDbContext>(options =>
+{
+    options.UseSqlServer(sqlServerProvisioningConnectionString, sqlOptions =>
     {
         sqlOptions.EnableRetryOnFailure();
     });
@@ -223,6 +235,8 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
+builder.Services.AddScoped<ISqlServerCommandExecutor, SqlServerCommandExecutor>();
+builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();
@@ -256,3 +270,13 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static string BuildProvisioningConnectionString(string raftConnectionString)
+{
+    var builder = new SqlConnectionStringBuilder(raftConnectionString)
+    {
+        InitialCatalog = "master"
+    };
+
+    return builder.ConnectionString;
+}

@@ -2,6 +2,7 @@ using System.Data.Common;
 using Microsoft.Extensions.Options;
 using raft_backend.Configuration;
 using raft_backend.Database;
+using raft_backend.Interfaces;
 
 namespace raft_backend.Services;
 
@@ -49,11 +50,12 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         // BackgroundService is a singleton; the scoped EF contexts and everything built on
         // top of them need a fresh DI scope per tick.
         using var scope = _scopeFactory.CreateScope();
+        var sqlServerExecutor = scope.ServiceProvider.GetRequiredService<ISqlServerCommandExecutor>();
         var sqlExecutor = scope.ServiceProvider.GetRequiredService<ISqlStoredProcedureExecutor>();
         var databaseInstanceService = scope.ServiceProvider.GetRequiredService<IDatabaseInstanceService>();
         var provisioningService = scope.ServiceProvider.GetRequiredService<ISqlServerProvisioningService>();
 
-        await TouchActiveConnectionsAsync(sqlExecutor, cancellationToken);
+        await TouchActiveConnectionsAsync(sqlServerExecutor, sqlExecutor, cancellationToken);
         await PauseInactiveAsync(sqlExecutor, provisioningService, cancellationToken);
         await DeleteExpiredAsync(sqlExecutor, provisioningService, cancellationToken);
         await RecalculateStorageAsync(sqlExecutor, databaseInstanceService, provisioningService, cancellationToken);
@@ -63,10 +65,11 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
     // enough for a 7/30-day TTL window; a precise events_statements_summary approach is a
     // future improvement, not required here.
     private async Task TouchActiveConnectionsAsync(
+        ISqlServerCommandExecutor sqlServerExecutor,
         ISqlStoredProcedureExecutor sqlExecutor,
         CancellationToken cancellationToken)
     {
-        var activeDatabases = await sqlExecutor.QueryAsync(
+        var activeDatabases = await sqlServerExecutor.QueryAsync(
             """
             SELECT DISTINCT DB_NAME(database_id)
             FROM sys.dm_exec_sessions
