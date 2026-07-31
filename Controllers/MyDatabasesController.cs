@@ -26,19 +26,22 @@ public class MyDatabasesController : ControllerBase
     private readonly IAuditEventService _auditEventService;
     private readonly ISqlServerProvisioningService _provisioningService;
     private readonly SqlServerProvisioningOptions _provisioningOptions;
+    private readonly ILogger<MyDatabasesController> _logger;
 
     public MyDatabasesController(
         IUserDashboardService dashboardService,
         IAccessCredentialService accessCredentialService,
         IAuditEventService auditEventService,
         ISqlServerProvisioningService provisioningService,
-        IOptions<SqlServerProvisioningOptions> provisioningOptions)
+        IOptions<SqlServerProvisioningOptions> provisioningOptions,
+        ILogger<MyDatabasesController> logger)
     {
         _dashboardService = dashboardService;
         _accessCredentialService = accessCredentialService;
         _auditEventService = auditEventService;
         _provisioningService = provisioningService;
         _provisioningOptions = provisioningOptions.Value;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -87,19 +90,21 @@ public class MyDatabasesController : ControllerBase
         {
             result = await _provisioningService.ProvisionDatabaseAsync(userId, cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Self-service SQL Server database provisioning failed for user {UserId}", userId);
+
             await _auditEventService.CreateAsync(new AuditEventCreateDto
             {
                 UserId = userId,
                 EventType = "ProvisioningFailed",
-                Description = "Self-service SQL Server database provisioning failed."
+                Description = $"Self-service SQL Server database provisioning failed: {ex.Message}"
             }, cancellationToken);
 
             return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<SqlServerProvisioningResultDto>
             {
                 Success = false,
-                Message = "The database could not be provisioned. Please try again in a few minutes."
+                Message = $"The database could not be provisioned: {ex.Message}"
             });
         }
 
