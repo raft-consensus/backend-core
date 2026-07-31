@@ -250,14 +250,12 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             return;
         }
 
+        var escapedPassword = password.Replace("'", "''");
         var commandText = loginExists
-            ? $"ALTER LOGIN [{loginName}] WITH PASSWORD = @Password, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF"
-            : $"CREATE LOGIN [{loginName}] WITH PASSWORD = @Password, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF";
+            ? $"ALTER LOGIN [{loginName}] WITH PASSWORD = N'{escapedPassword}', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF"
+            : $"CREATE LOGIN [{loginName}] WITH PASSWORD = N'{escapedPassword}', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF";
 
-        await _sqlServerExecutor.ExecuteNonQueryAsync(
-            commandText,
-            command => command.AddParameter("@Password", password),
-            cancellationToken);
+        await _sqlServerExecutor.ExecuteNonQueryAsync(commandText, null, cancellationToken);
     }
 
     private async Task CleanupSqlServerDatabaseAndLoginAsync(
