@@ -97,6 +97,7 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth"));
 builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
 builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
+builder.Services.Configure<SqlServerProvisioningOptions>(builder.Configuration.GetSection("SqlServerProvisioning"));
 
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Frontend");
@@ -129,6 +130,9 @@ builder.Services.AddDataProtection()
 var raftConnectionString = builder.Configuration.GetConnectionString("RaftDb")
     ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:RaftDb");
 
+var sqlServerProvisioningConnectionString = builder.Configuration.GetConnectionString("SqlServerProvisioning")
+    ?? raftConnectionString;
+
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Jwt");
 
@@ -138,6 +142,14 @@ var oauthOptions = builder.Configuration.GetSection("OAuth").Get<OAuthOptions>()
 builder.Services.AddDbContext<RaftDbContext>(options =>
 {
     options.UseSqlServer(raftConnectionString, sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure();
+    });
+});
+
+builder.Services.AddDbContext<SqlServerProvisioningDbContext>(options =>
+{
+    options.UseSqlServer(sqlServerProvisioningConnectionString, sqlOptions =>
     {
         sqlOptions.EnableRetryOnFailure();
     });
@@ -223,6 +235,8 @@ builder.Services.AddAuthentication(options =>
 });
 
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
+builder.Services.AddScoped<ISqlServerCommandExecutor, SqlServerCommandExecutor>();
+builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();
