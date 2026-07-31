@@ -134,6 +134,13 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
+        if (!await DatabaseExistsAsync(instance.DatabaseName, cancellationToken))
+        {
+            _logger.LogWarning("Database {DatabaseName} is missing while pausing instance {DatabaseInstanceId}; cleaning up orphaned metadata.", instance.DatabaseName, databaseInstanceId);
+            await DeleteAsync(databaseInstanceId, cancellationToken);
+            return;
+        }
+
         await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
     }
@@ -142,6 +149,13 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
     {
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
+        if (!await DatabaseExistsAsync(instance.DatabaseName, cancellationToken))
+        {
+            _logger.LogWarning("Database {DatabaseName} is missing while resuming instance {DatabaseInstanceId}; cleaning up orphaned metadata.", instance.DatabaseName, databaseInstanceId);
+            await DeleteAsync(databaseInstanceId, cancellationToken);
+            return;
+        }
 
         await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: true, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
@@ -308,6 +322,19 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             ) THEN 1 ELSE 0 END AS bit)
             """,
             command => command.AddParameter("@LoginName", loginName),
+            reader => reader.GetBoolean(0),
+            cancellationToken);
+
+        return results.Single();
+    }
+
+    private async Task<bool> DatabaseExistsAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        var results = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT CAST(CASE WHEN DB_ID(@DatabaseName) IS NULL THEN 0 ELSE 1 END AS bit)
+            """,
+            command => command.AddParameter("@DatabaseName", databaseName),
             reader => reader.GetBoolean(0),
             cancellationToken);
 
