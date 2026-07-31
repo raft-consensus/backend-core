@@ -99,6 +99,7 @@ builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth
 builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
 builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
 builder.Services.Configure<SqlServerProvisioningOptions>(builder.Configuration.GetSection("SqlServerProvisioning"));
+builder.Services.Configure<ExternalCellConnectionStrings>(builder.Configuration.GetSection("ConnectionStrings"));
 
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Frontend");

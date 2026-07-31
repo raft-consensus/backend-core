@@ -8,7 +8,7 @@ public class DatabaseInstance
     public int Port { get; set; }
     public string DatabaseName { get; set; } = string.Empty;
     public string DatabaseUser { get; set; } = string.Empty;
-    public string Engine { get; set; } = "MySQL";
+    public string Engine { get; set; } = "SQL Server";
     public string Status { get; set; } = string.Empty; // "Active" | "Suspended" | "Deleted"
     public long UsedSpaceBytes { get; set; }
     public long MaxSpaceBytes { get; set; } // 20 MB according to deliverable 1

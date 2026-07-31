@@ -1,7 +1,7 @@
 Plataforma de Hosting DB & Servicios para Desarrolladores
-El objetivo de este proyecto es diseñar e implementar un sistema de información robusto y seguro que actúe como un proveedor de servicios de bases de datos gratuitas (y herramientas de prueba) para estudiantes y desarrolladores.
+El objetivo de este proyecto es diseñar e implementar el backend de esta célula: un sistema robusto y seguro que expone la API de nuestra página y consume el SQL Server compartido que vive en la VPS del equipo.
 
-La particularidad de este reto radica en su arquitectura: toda la lógica de negocio debe residir y ejecutarse en la base de datos, delegando al backend un rol exclusivamente de mediador, despachador y asegurador de la comunicación.
+La particularidad de este reto radica en su arquitectura: toda la lógica de negocio debe residir y ejecutarse en la base de datos compartida, delegando al backend un rol exclusivamente de mediador, despachador y asegurador de la comunicación.
 
 Filosofía de la Arquitectura
 En este proyecto romperemos el paradigma tradicional donde el backend procesa las reglas de negocio. Aquí adoptaremos un enfoque Database-Centric:
@@ -9,8 +9,9 @@ En este proyecto romperemos el paradigma tradicional donde el backend procesa la
 ⚠️ Regla de Oro: El Backend es "tonto" y la Base de Datos es "inteligente". Ninguna regla de validación compleja, cálculo, asignación de permisos o flujo de negocio se escribe en el código del servidor de aplicaciones. El backend solo recibe la petición, la traslada a la base de datos, y retorna la respuesta estructurada.
 
 Roles de cada componente:
-Motor de Base de Datos (SQL Server): Almacena los datos y ejecuta el 100% de la lógica de negocio mediante Stored Procedures (SPs) para operaciones de escritura/modificación, Views para consultas complejas, y Functions para cálculos o transformaciones de datos.
-Backend Framework (A elección): Actúa como un middleware de paso. Se encarga de exponer los endpoints HTTP, gestionar la autenticación/autorización, aplicar políticas de tráfico (Rate Limiting) y mapear los resultados de la base de datos hacia el cliente.
+Motor de Base de Datos compartido en la VPS (SQL Server): almacena los datos y ejecuta el 100% de la lógica de negocio mediante Stored Procedures (SPs) para operaciones de escritura/modificación, Views para consultas complejas, y Functions para cálculos o transformaciones de datos. Esta base de datos es consumida por todos los backends de los equipos.
+Backend de esta célula: actúa como un middleware de paso para nuestra página. Se encarga de exponer los endpoints HTTP, gestionar la autenticación/autorización, aplicar políticas de tráfico (Rate Limiting) y mapear los resultados de la base de datos hacia el cliente.
+Backends de otras células: cada equipo tiene su propio backend y su propia interfaz. Esos backends pueden consumir el mismo SQL Server compartido de la VPS o, en otras fases, otros servicios que pertenezcan a células distintas.
 Requerimientos Técnicos
 Para garantizar la mantenibilidad y el desacoplamiento en el backend, se deberán seguir estrictamente los siguientes lineamientos:
 
@@ -19,8 +20,8 @@ El backend debe definir interfaces claras (interfaces o contracts) para las oper
 La implementación concreta del repositorio solo se encargará de invocar a los Stored Procedures o Views correspondientes en SQL Server.
 El controlador o servicio del backend dependerá únicamente de la abstracción (la interfaz), cumpliendo con el principio DIP (Dependency Inversion Principle) de SOLID.
 Tecnologías:
-Base de Datos: Microsoft SQL Server.
-Backend: Framework a elección del equipo (se recomienda un stack fuertemente tipado como .NET Web API o soluciones ágiles como Laravel / NestJS).
+Base de Datos: Microsoft SQL Server compartido en la VPS.
+Backend: Framework a elección del equipo (este repo usa .NET Web API).
 Viabilidad del Servicio y Políticas de Seguridad
 Dado que expondremos un servicio gratuito de aprovisionamiento de bases de datos para desarrollo, es mandatorio mitigar exploits, abusos de recursos y ataques maliciosos. El sistema debe implementar y controlar las siguientes directrices:
 
@@ -45,15 +46,17 @@ cantidad): https://[nombre_servicio].[nombre_de_la_celula].andrescortes.dev (Eje
 
 ---
 
-## Contrato de la celda SQL Server
+## Contrato del SQL Server compartido
 
-Este backend consume SQL Server como fuente de verdad para la lógica de negocio del core de plataforma. La configuración en `appsettings.json` define la conexión principal `ConnectionStrings:RaftDb`, mientras que `ConnectionStrings:MySqlProvisioning` apunta al servicio de otra célula. Además, `Jwt`, `OAuth`, `Frontend`, `DataProtection` y `LifecycleJob` controlan la ejecución del backend, pero no sustituyen la lógica de base de datos.
+Este backend consume SQL Server como fuente de verdad para la lógica de negocio del core de Raft. La configuración en `appsettings.json` define la conexión principal `ConnectionStrings:RaftDb`, que debe apuntar al SQL Server compartido que corre en la VPS. En el futuro, si Raft integra motores de otras células, la configuración podrá extenderse con más conexiones.
+
+Además, `Jwt`, `OAuth`, `Frontend`, `DataProtection` y `LifecycleJob` controlan la ejecución del backend, pero no sustituyen la lógica de base de datos.
 
 La regla operativa es esta:
 
-- esta célula expone el servicio core de usuarios, instancias, credenciales, auditoría, métricas y lifecycle de SQL Server;
-- otras células consumen este servicio para su propia lógica de negocio;
-- esta célula también consume servicios de otras células, como MySQL, para aprovisionamiento y operación;
+- este backend solo maneja la página y el flujo de negocio de Raft;
+- el SQL Server de la VPS es compartido por todos los equipos y concentra la lógica de negocio central;
+- cada equipo puede tener su propio backend, pero todos apuntan al mismo SQL Server compartido o a los servicios asignados a su célula;
 - `AuthService` solo autentica y emite JWT; no aprovisiona bases durante registro o login;
 - la creación de bases queda exclusivamente en `POST /api/me/databases`.
 
@@ -98,11 +101,11 @@ La regla operativa es esta:
 
 ## Conclusión operativa
 
-El conjunto de SPs cubre bien el alcance de esta célula como servicio core de SQL Server. La separación correcta es:
+El conjunto de SPs cubre bien el alcance de este backend como cliente del SQL Server compartido. La separación correcta es:
 
-- SQL Server: identidad base, instancias, credenciales, auditoría, métricas, lifecycle.
-- Backend: autenticación HTTP, orquestación entre células, cifrado/descifrado, ejecución de SPs.
-- Otras células: infraestructura externa o lógica de motores alternos como MySQL.
+- SQL Server compartido en la VPS: identidad base, instancias, credenciales, auditoría, métricas, lifecycle.
+- Backend de esta célula: autenticación HTTP, orquestación, cifrado/descifrado, ejecución de SPs.
+- Otros backends de otros equipos: consumen el mismo SQL Server compartido o el motor que les corresponda.
 
 Los puntos que merecen control estricto no son de cobertura funcional, sino de contrato:
 
@@ -218,6 +221,8 @@ La propuesta más sólida para esta plataforma es separar identidad de plataform
 ## Recomendación final
 
 Para esta plataforma, recomiendo la primera opción: identidad de plataforma separada de la infraestructura, con acceso mediado por el backend.
+
+Además, el backend debe tratar los motores externos como capacidades de otras células: SQL Server queda bajo esta célula, mientras que MySQL, PostgreSQL u otros motores pueden vivir en células distintas y deben consumirse vía contratos explícitos, no con conocimiento interno de su implementación.
 
 Motivo:
 

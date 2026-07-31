@@ -7,7 +7,7 @@ public class DatabaseInstanceCreateDto
     public int Port { get; set; }
     public string DatabaseName { get; set; } = string.Empty;
     public string DatabaseUser { get; set; } = string.Empty;
-    public string Engine { get; set; } = "MySQL";
+    public string Engine { get; set; } = "SQL Server";
     public string Status { get; set; } = "Active";
     public long UsedSpaceBytes { get; set; }
     public long MaxSpaceBytes { get; set; } = 20 * 1024 * 1024;
@@ -21,7 +21,7 @@ public class DatabaseInstanceUpdateDto
     public int Port { get; set; }
     public string DatabaseName { get; set; } = string.Empty;
     public string DatabaseUser { get; set; } = string.Empty;
-    public string Engine { get; set; } = "MySQL";
+    public string Engine { get; set; } = "SQL Server";
     public string Status { get; set; } = "Active";
     public long UsedSpaceBytes { get; set; }
     public long MaxSpaceBytes { get; set; } = 20 * 1024 * 1024;

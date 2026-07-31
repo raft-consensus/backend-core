@@ -1,9 +1,10 @@
 # raft-backend
 
-Raft backend API. The backend uses:
+Raft backend API for this cell. This repository exposes the web API used by the Raft application and connects to the shared SQL Server running in the VPS.
 
-- SQL Server for the system core.
-- MySQL for provisioned database infrastructure.
+The backend uses:
+
+- SQL Server as the shared core for all team backends in the VPS.
 - `ServiceResponse<T>` as the standard response wrapper.
 
 ## Configuration
@@ -14,7 +15,8 @@ Define these connection strings in `appsettings.json` or environment variables:
 {
   "ConnectionStrings": {
     "RaftDb": "Server=...;Database=...;Trusted_Connection=True;TrustServerCertificate=True;",
-    "MySqlProvisioning": "server=...;port=3306;database=...;user=...;password=..."
+    "MySqlProvisioning": "server=<mysql-host>;port=3306;database=<database>;user=<username>;password=<password>;",
+    "PostgresProvisioning": "Host=<postgres-host>;Port=5432;Database=<database>;Username=<username>;Password=<password>;"
   },
   "Jwt": {
     "Issuer": "raft-backend",
@@ -47,7 +49,7 @@ Define these connection strings in `appsettings.json` or environment variables:
 
 Important note: `appsettings.json` still contains sample values and is not yet wired to GitHub Secrets or secure environment variables. Before deploying to production, move `ConnectionStrings`, `Jwt`, and `OAuth` into environment secrets or a secret mounted by the pipeline.
 
-`ConnectionStrings:MySqlProvisioning` must point at the `raft_provisioner` account (see "MySQL provisioning account" below) on your existing MySQL server — never at `root`.
+`ConnectionStrings:RaftDb` must point to the shared SQL Server instance in the VPS. If that host, port, or credentials change later, only `appsettings.json` or the corresponding environment variables need to be updated; the backend code reads them through configuration.
 
 `Frontend:BaseUrl` drives two things: it's the only origin allowed by CORS (`Program.cs`, policy `"Frontend"`), and `AuthController` redirects there (`{BaseUrl}{CallbackPath}#access_token=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. See [`API.md`](API.md) for the exact contract.
 
@@ -61,14 +63,16 @@ UPDATE Users SET Role = 'Admin' WHERE Email = 'you@example.com';
 
 ## Infrastructure
 
-`docker-compose.yml` only declares the backend service (image/build, port, `appsettings.json` mount, and the Data Protection keys volume). It does **not** stand up a database engine: MySQL, SQL Server, Postgres and MongoDB all run as independently managed containers on the VPS, outside this repo's lifecycle. Point `ConnectionStrings:MySqlProvisioning` (and `RaftDb`) at wherever those containers are reachable — same host/port a student would use, since MySQL's port is already public for direct student connections.
+`docker-compose.yml` only declares the backend service (image/build, port, `appsettings.json` mount, and the Data Protection keys volume). It does **not** stand up a database engine: the shared SQL Server lives in the VPS and is used by the backends of all teams. Point the connection strings at the reachable endpoints for that shared service.
 
 ## Database — DB-first
 
-This project is **DB-first**: there is no EF Core Migrations and no runtime schema-apply step. All schema, views and stored procedures are hand-run once against the real servers:
+This project is **DB-first**: there is no EF Core Migrations and no runtime schema-apply step. All schema, views and stored procedures are hand-run once against the real server:
 
 - [`Database/sql-server-schema.md`](Database/sql-server-schema.md) — full ordered script for `RaftDb` (tables, views, all stored procedures). Run it top to bottom in SSMS/Azure Data Studio/`sqlcmd`.
-- [`Database/mysql-provisioning-setup.md`](Database/mysql-provisioning-setup.md) — creates the least-privilege `raft_provisioner` account on your existing MySQL server. MySQL has no static schema beyond that — student databases are created dynamically at runtime by `MySqlProvisioningService`.
+`RaftDb` is the shared SQL Server database used by the Raft backend. Other teams may have their own backends, but if they use the shared SQL Server, they must point to their own agreed contract and credentials.
+
+The `MySqlProvisioning` and `PostgresProvisioning` connection strings remain in the sample config as future extensibility points for other cells. They are not the primary runtime path of Raft today.
 
 `RaftDbContext`'s fluent configuration (`Database/RaftDbContext.cs`) documents the same shape in C#, but it is never used to generate or apply schema — only as the connection source for `ISqlStoredProcedureExecutor`.
 
@@ -116,7 +120,7 @@ Example payload:
   "port": 3306,
   "databaseName": "cell_001",
   "databaseUser": "cell_001_user",
-  "engine": "MySQL",
+  "engine": "SQL Server",
   "status": "Active",
   "usedSpaceBytes": 0,
   "maxSpaceBytes": 20971520,

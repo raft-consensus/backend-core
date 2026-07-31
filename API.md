@@ -1,6 +1,6 @@
 # API Reference — Raft Backend
 
-Guía para el equipo de frontend. Cubre todos los endpoints expuestos hoy, con forma exacta de request/response.
+Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos hoy, con forma exacta de request/response.
 
 ## Convenciones generales
 
@@ -23,6 +23,8 @@ Guía para el equipo de frontend. Cubre todos los endpoints expuestos hoy, con f
 **Autenticación:** `Authorization: Bearer <jwt>` en cada endpoint que no diga "Público". El JWT se obtiene del flujo de OAuth (sección 2) y expira en 60 minutos (`Jwt:ExpirationMinutes`).
 
 **CORS:** solo el origen configurado en `Frontend:BaseUrl` (`https://raft.andrescortes.dev`) puede llamar al API desde el navegador. Si el frontend corre en otro dominio (otro entorno, localhost, etc.), avisar para agregarlo — hoy es un único origen permitido, no una lista.
+
+**Arquitectura por células:** este backend administra la célula de Raft. Hoy el flujo activo aprovisiona SQL Server. MySQL, PostgreSQL u otros motores quedan como extensibilidad futura para otras células y deben integrarse mediante contratos públicos, no mezclarse con el camino principal.
 
 **Rate limiting:**
 
@@ -131,7 +133,7 @@ Devuelve las bases de datos del usuario autenticado (el id sale del JWT, nunca d
       "port": 3306,
       "databaseName": "raft_u1_a1b2c3d4",
       "databaseUser": "raft_u1_a1b2c3d4",
-      "engine": "MySQL",
+      "engine": "SQL Server",
       "status": "Active",
       "usedSpaceBytes": 40960,
       "maxSpaceBytes": 20971520,
@@ -144,7 +146,7 @@ Devuelve las bases de datos del usuario autenticado (el id sale del JWT, nunca d
 
 `status` puede ser `Active`, `Suspended` (pausada por 7 días de inactividad o por exceder `maxSpaceBytes`) o, si ya no aparece en la lista, fue eliminada (30 días de inactividad).
 
-Si el usuario todavía no tiene ninguna BD (p. ej. el aprovisionamiento automático falló tras su primer login), `data` viene como lista vacía — no es un error, es un estado real a manejar en la UI ("aún no tienes una base de datos").
+Si el usuario todavía no tiene ninguna BD, `data` viene como lista vacía — no es un error, es un estado real a manejar en la UI ("aún no tienes una base de datos").
 
 ### `GET /api/me/databases/{databaseInstanceId}/password`
 
@@ -205,7 +207,7 @@ Todo lo de esta sección devuelve `403 Forbidden` si el usuario autenticado no t
 | `PUT` | `/api/database-instances/{id}` | `DatabaseInstanceUpdateDto` |
 | `DELETE` | `/api/database-instances/{id}` | — |
 
-Mismo shape que los objetos de `GET /api/me/databases` (sección 3) más `userId`. Crear/editar acá **no** dispara el aprovisionamiento real en MySQL — es solo el registro de metadata. El aprovisionamiento real solo lo dispara el login (sección 2).
+Mismo shape que los objetos de `GET /api/me/databases` (sección 3) más `userId`. Crear/editar acá **no** dispara el aprovisionamiento real en otro motor — es solo el registro de metadata. El aprovisionamiento real hoy lo dispara el autoservicio `POST /api/me/databases` y aprovisiona SQL Server desde Raft.
 
 ### Access Credentials — `/api/access-credentials`
 
