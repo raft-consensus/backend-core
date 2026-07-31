@@ -18,26 +18,33 @@ La cuenta debe conectarse con un `ConnectionStrings:SqlServerProvisioning` separ
 
 ## Qué hace el backend con esta cuenta
 
-Por cada base nueva:
+Por cada usuario, se crea una única identidad SQL Server compartida:
+
+```sql
+CREATE LOGIN [raft_u{userId}] WITH PASSWORD = '<password generado>';
+```
+
+Por cada base nueva de ese usuario:
 
 ```sql
 CREATE DATABASE [raft_u{userId}_{sufijo}];
-CREATE LOGIN [raft_u{userId}_{sufijo}] WITH PASSWORD = '<password generado>';
 USE [raft_u{userId}_{sufijo}];
-CREATE USER [raft_u{userId}_{sufijo}] FOR LOGIN [raft_u{userId}_{sufijo}];
-ALTER ROLE [db_owner] ADD MEMBER [raft_u{userId}_{sufijo}];
+CREATE USER [raft_u{userId}] FOR LOGIN [raft_u{userId}];
+ALTER ROLE [db_owner] ADD MEMBER [raft_u{userId}];
 ```
 
 Para pausarla:
 
 ```sql
-ALTER LOGIN [raft_u{userId}_{sufijo}] DISABLE;
+USE [raft_u{userId}_{sufijo}];
+DENY CONNECT TO [raft_u{userId}];
 ```
 
 Para reanudarla:
 
 ```sql
-ALTER LOGIN [raft_u{userId}_{sufijo}] ENABLE;
+USE [raft_u{userId}_{sufijo}];
+REVOKE CONNECT FROM [raft_u{userId}];
 ```
 
 Para eliminarla:
@@ -45,13 +52,13 @@ Para eliminarla:
 ```sql
 ALTER DATABASE [raft_u{userId}_{sufijo}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 DROP DATABASE [raft_u{userId}_{sufijo}];
-DROP LOGIN [raft_u{userId}_{sufijo}];
+-- El login compartido solo se elimina cuando el usuario ya no tiene bases activas.
 ```
 
 ## Permisos
 
 - `CREATE DATABASE` permite crear la base.
-- `ALTER ANY LOGIN` permite crear, deshabilitar y eliminar logins.
+- `ALTER ANY LOGIN` permite crear y eliminar el login compartido de cada usuario.
 - `VIEW SERVER STATE` permite al job de ciclo de vida detectar sesiones activas.
 
 En SQL Server 2022 o superior, Microsoft cambió parte de la superficie de permisos sobre DMVs y puede requerirse `VIEW SERVER PERFORMANCE STATE` para consultar `sys.dm_exec_sessions`. En SQL Server 2019 y anteriores, `VIEW SERVER STATE` es suficiente.

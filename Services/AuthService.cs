@@ -13,21 +13,15 @@ namespace raft_backend.Services;
 public class AuthService : IAuthService
 {
     private readonly ISqlStoredProcedureExecutor _executor;
-    private readonly ISqlServerProvisioningService _provisioningService;
-    private readonly IAuditEventService _auditEventService;
     private readonly JwtOptions _jwtOptions;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
         ISqlStoredProcedureExecutor executor,
-        ISqlServerProvisioningService provisioningService,
-        IAuditEventService auditEventService,
         IOptions<JwtOptions> jwtOptions,
         ILogger<AuthService> logger)
     {
         _executor = executor;
-        _provisioningService = provisioningService;
-        _auditEventService = auditEventService;
         _jwtOptions = jwtOptions.Value;
         _logger = logger;
     }
@@ -67,28 +61,7 @@ public class AuthService : IAuthService
             throw new InvalidOperationException($"{StoredProcedureNames.Users_UpsertFromOAuth} did not return a user row.");
         }
 
-        var (user, isNewUser) = (result.User, result.IsNewUser);
-
-        if (isNewUser)
-        {
-            // A transient provisioning failure must never block authentication: the user
-            // still gets their JWT, and the dashboard simply shows "no database yet" until
-            // the lifecycle job (Fase 3) retries provisioning for users without one.
-            try
-            {
-                await _provisioningService.ProvisionDatabaseAsync(user.Id, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "SQL Server provisioning failed for new user {UserId}", user.Id);
-                await _auditEventService.CreateAsync(new AuditEventCreateDto
-                {
-                    UserId = user.Id,
-                    EventType = "ProvisioningFailed",
-                    Description = "Automatic SQL Server database provisioning failed after first login."
-                }, cancellationToken);
-            }
-        }
+        var user = result.User;
 
         var token = CreateJwt(user);
 
@@ -120,21 +93,6 @@ public class AuthService : IAuthService
         {
             // Email ya registrado: el SP no devolvió fila.
             return null;
-        }
-        
-        try
-        {
-            await _provisioningService.ProvisionDatabaseAsync(user.Id, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "SQL Server provisioning failed for new user {UserId}", user.Id);
-            await _auditEventService.CreateAsync(new AuditEventCreateDto
-            {
-                UserId = user.Id,
-                EventType = "ProvisioningFailed",
-                Description = "Automatic SQL Server database provisioning failed after first login."
-            }, cancellationToken);
         }
 
         var token = CreateJwt(user);

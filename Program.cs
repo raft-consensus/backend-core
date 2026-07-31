@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
 using raft_backend.Configuration;
 using raft_backend.Database;
@@ -131,7 +132,7 @@ var raftConnectionString = builder.Configuration.GetConnectionString("RaftDb")
     ?? throw new InvalidOperationException("Missing connection string: ConnectionStrings:RaftDb");
 
 var sqlServerProvisioningConnectionString = builder.Configuration.GetConnectionString("SqlServerProvisioning")
-    ?? raftConnectionString;
+    ?? BuildProvisioningConnectionString(raftConnectionString);
 
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Jwt");
@@ -270,3 +271,13 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static string BuildProvisioningConnectionString(string raftConnectionString)
+{
+    var builder = new SqlConnectionStringBuilder(raftConnectionString)
+    {
+        InitialCatalog = "master"
+    };
+
+    return builder.ConnectionString;
+}

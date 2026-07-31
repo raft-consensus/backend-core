@@ -47,17 +47,28 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
 
     public async Task<SqlServerProvisioningResultDto> ProvisionDatabaseAsync(int userId, CancellationToken cancellationToken = default)
     {
+        var sharedState = await GetSharedProvisioningStateAsync(userId, cancellationToken);
+        var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
+        var sharedLoginName = sharedState.SharedLoginName;
+        var password = sharedState.EncryptedPassword is null
+            ? _passwordGenerator.Generate(_options.PasswordLength)
+            : protector.Unprotect(sharedState.EncryptedPassword);
         for (var attempt = 1; attempt <= MaxProvisioningAttempts; attempt++)
         {
             var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
             var identifier = $"raft_u{userId}_{suffix}";
             ValidateIdentifier(identifier);
-
-            var password = _passwordGenerator.Generate(_options.PasswordLength);
+            var loginExists = await LoginExistsAsync(sharedLoginName, cancellationToken);
 
             try
             {
-                await CreateSqlServerDatabaseAndLoginAsync(identifier, password, cancellationToken);
+                await CreateSqlServerDatabaseAndLoginAsync(
+                    identifier,
+                    sharedLoginName,
+                    password,
+                    loginExists,
+                    sharedState.HasExistingDatabases,
+                    cancellationToken);
             }
             catch (Exception ex) when (attempt < MaxProvisioningAttempts)
             {
@@ -67,7 +78,6 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
 
             try
             {
-                var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
                 var encryptedPassword = protector.Protect(password);
 
                 var instance = await _databaseInstanceService.CreateAsync(new DatabaseInstanceCreateDto
@@ -76,7 +86,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                     Host = _options.PublicHost,
                     Port = _options.PublicPort,
                     DatabaseName = identifier,
-                    DatabaseUser = identifier,
+                    DatabaseUser = sharedLoginName,
                     Engine = "SQL Server",
                     Status = "Active",
                     UsedSpaceBytes = 0,
@@ -94,7 +104,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                 {
                     UserId = userId,
                     EventType = "Provisioning",
-                    Description = $"SQL Server database '{identifier}' provisioned automatically after first login."
+                    Description = $"SQL Server database '{identifier}' provisioned through self-service."
                 }, cancellationToken);
 
                 return new SqlServerProvisioningResultDto
@@ -103,7 +113,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                     Host = _options.PublicHost,
                     Port = _options.PublicPort,
                     DatabaseName = identifier,
-                    DatabaseUser = identifier,
+                    DatabaseUser = sharedLoginName,
                     Password = password,
                     Engine = "SQL Server"
                 };
@@ -111,7 +121,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to persist provisioning result for {Identifier}; rolling back SQL Server side", identifier);
-                await CleanupSqlServerDatabaseAndLoginAsync(identifier);
+                await CleanupSqlServerDatabaseAndLoginAsync(identifier, sharedLoginName, !sharedState.HasExistingDatabases, CancellationToken.None);
                 throw;
             }
         }
@@ -124,7 +134,14 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        await _sqlServerExecutor.ExecuteNonQueryAsync($"ALTER LOGIN [{instance.DatabaseUser}] DISABLE", null, cancellationToken);
+        if (!await DatabaseExistsAsync(instance.DatabaseName, cancellationToken))
+        {
+            _logger.LogWarning("Database {DatabaseName} is missing while pausing instance {DatabaseInstanceId}; cleaning up orphaned metadata.", instance.DatabaseName, databaseInstanceId);
+            await DeleteAsync(databaseInstanceId, cancellationToken);
+            return;
+        }
+
+        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
     }
 
@@ -133,7 +150,14 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        await _sqlServerExecutor.ExecuteNonQueryAsync($"ALTER LOGIN [{instance.DatabaseUser}] ENABLE", null, cancellationToken);
+        if (!await DatabaseExistsAsync(instance.DatabaseName, cancellationToken))
+        {
+            _logger.LogWarning("Database {DatabaseName} is missing while resuming instance {DatabaseInstanceId}; cleaning up orphaned metadata.", instance.DatabaseName, databaseInstanceId);
+            await DeleteAsync(databaseInstanceId, cancellationToken);
+            return;
+        }
+
+        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: true, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
     }
 
@@ -153,15 +177,20 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             null,
             cancellationToken);
 
-        await _sqlServerExecutor.ExecuteNonQueryAsync(
-            $"""
-             IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{instance.DatabaseUser}')
-             BEGIN
-                 DROP LOGIN [{instance.DatabaseUser}];
-             END
-             """,
-            null,
-            cancellationToken);
+        var cleanupState = await GetSharedLoginCleanupStateAsync(instance.UserId, cancellationToken);
+
+        if (cleanupState.CanDropLogin)
+        {
+            await _sqlServerExecutor.ExecuteNonQueryAsync(
+                $"""
+                 IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{cleanupState.SharedLoginName}')
+                 BEGIN
+                     DROP LOGIN [{cleanupState.SharedLoginName}];
+                 END
+                 """,
+                null,
+                cancellationToken);
+        }
 
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
     }
@@ -178,22 +207,25 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             cancellationToken);
     }
 
-    private async Task CreateSqlServerDatabaseAndLoginAsync(string identifier, string password, CancellationToken cancellationToken)
+    private async Task CreateSqlServerDatabaseAndLoginAsync(
+        string identifier,
+        string loginName,
+        string password,
+        bool loginExists,
+        bool hasExistingDatabases,
+        CancellationToken cancellationToken)
     {
         try
         {
             await _sqlServerExecutor.ExecuteNonQueryAsync($"CREATE DATABASE [{identifier}]", null, cancellationToken);
 
-            await _sqlServerExecutor.ExecuteNonQueryAsync(
-                $"CREATE LOGIN [{identifier}] WITH PASSWORD = @Password, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF",
-                command => command.AddParameter("@Password", password),
-                cancellationToken);
+            await EnsureSharedLoginAsync(loginName, password, loginExists, hasExistingDatabases, cancellationToken);
 
             await _sqlServerExecutor.ExecuteNonQueryAsync(
                 $"""
                  USE [{identifier}];
-                 CREATE USER [{identifier}] FOR LOGIN [{identifier}];
-                 ALTER ROLE [db_owner] ADD MEMBER [{identifier}];
+                 CREATE USER [{loginName}] FOR LOGIN [{loginName}];
+                 ALTER ROLE [db_owner] ADD MEMBER [{loginName}];
                  """,
                 null,
                 cancellationToken);
@@ -201,12 +233,38 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to provision SQL Server database/login for {Identifier}; attempting cleanup", identifier);
-            await CleanupSqlServerDatabaseAndLoginAsync(identifier);
+            await CleanupSqlServerDatabaseAndLoginAsync(identifier, loginName, !hasExistingDatabases, CancellationToken.None);
             throw;
         }
     }
 
-    private async Task CleanupSqlServerDatabaseAndLoginAsync(string identifier)
+    private async Task EnsureSharedLoginAsync(
+        string loginName,
+        string password,
+        bool loginExists,
+        bool hasExistingDatabases,
+        CancellationToken cancellationToken)
+    {
+        if (loginExists && hasExistingDatabases)
+        {
+            return;
+        }
+
+        var commandText = loginExists
+            ? $"ALTER LOGIN [{loginName}] WITH PASSWORD = @Password, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF"
+            : $"CREATE LOGIN [{loginName}] WITH PASSWORD = @Password, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF";
+
+        await _sqlServerExecutor.ExecuteNonQueryAsync(
+            commandText,
+            command => command.AddParameter("@Password", password),
+            cancellationToken);
+    }
+
+    private async Task CleanupSqlServerDatabaseAndLoginAsync(
+        string identifier,
+        string loginName,
+        bool dropLogin,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -219,22 +277,99 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                  END
                  """,
                 null,
-                CancellationToken.None);
+                cancellationToken);
 
-            await _sqlServerExecutor.ExecuteNonQueryAsync(
-                $"""
-                 IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{identifier}')
-                 BEGIN
-                     DROP LOGIN [{identifier}];
-                 END
-                 """,
-                null,
-                CancellationToken.None);
+            if (dropLogin)
+            {
+                await _sqlServerExecutor.ExecuteNonQueryAsync(
+                    $"""
+                     IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{loginName}')
+                     BEGIN
+                         DROP LOGIN [{loginName}];
+                     END
+                     """,
+                    null,
+                    cancellationToken);
+            }
         }
         catch (Exception cleanupEx)
         {
             _logger.LogError(cleanupEx, "Best-effort SQL Server cleanup failed for identifier {Identifier}; manual cleanup required", identifier);
         }
+    }
+
+    private async Task SetDatabaseConnectPermissionAsync(
+        string databaseName,
+        string loginName,
+        bool allowConnect,
+        CancellationToken cancellationToken)
+    {
+        var commandText = allowConnect
+            ? $"USE [{databaseName}]; REVOKE CONNECT FROM [{loginName}];"
+            : $"USE [{databaseName}]; DENY CONNECT TO [{loginName}];";
+
+        await _sqlServerExecutor.ExecuteNonQueryAsync(commandText, null, cancellationToken);
+    }
+
+    private async Task<bool> LoginExistsAsync(string loginName, CancellationToken cancellationToken)
+    {
+        var results = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT CAST(CASE WHEN EXISTS (
+                SELECT 1
+                FROM sys.server_principals
+                WHERE name = @LoginName
+            ) THEN 1 ELSE 0 END AS bit)
+            """,
+            command => command.AddParameter("@LoginName", loginName),
+            reader => reader.GetBoolean(0),
+            cancellationToken);
+
+        return results.Single();
+    }
+
+    private async Task<bool> DatabaseExistsAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        var results = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT CAST(CASE WHEN DB_ID(@DatabaseName) IS NULL THEN 0 ELSE 1 END AS bit)
+            """,
+            command => command.AddParameter("@DatabaseName", databaseName),
+            reader => reader.GetBoolean(0),
+            cancellationToken);
+
+        return results.Single();
+    }
+
+    private async Task<SqlServerSharedProvisioningStateDto> GetSharedProvisioningStateAsync(int userId, CancellationToken cancellationToken)
+    {
+        var state = await _sqlExecutor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.Users_GetSharedSqlServerProvisioningState,
+            command => command.AddParameter("@UserId", userId),
+            reader => new SqlServerSharedProvisioningStateDto
+            {
+                SharedLoginName = reader.GetStringOrEmpty("SharedLoginName"),
+                HasExistingDatabases = reader.GetBooleanValue("HasExistingDatabases"),
+                EncryptedPassword = reader.GetNullableString("EncryptedPassword")
+            },
+            cancellationToken);
+
+        return state ?? throw new InvalidOperationException($"Failed to resolve shared SQL Server provisioning state for user {userId}.");
+    }
+
+    private async Task<SqlServerSharedLoginCleanupStateDto> GetSharedLoginCleanupStateAsync(int userId, CancellationToken cancellationToken)
+    {
+        var state = await _sqlExecutor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.DatabaseInstances_GetSharedLoginCleanupState,
+            command => command.AddParameter("@UserId", userId),
+            reader => new SqlServerSharedLoginCleanupStateDto
+            {
+                SharedLoginName = reader.GetStringOrEmpty("SharedLoginName"),
+                CanDropLogin = reader.GetBooleanValue("CanDropLogin")
+            },
+            cancellationToken);
+
+        return state ?? throw new InvalidOperationException($"Failed to resolve shared SQL Server cleanup state for user {userId}.");
     }
 
     private static void ValidateIdentifier(string identifier)

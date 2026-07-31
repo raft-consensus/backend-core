@@ -15,3 +15,16 @@ public class SqlServerProvisioningResultDto
     public string Password { get; set; } = string.Empty;
     public string Engine { get; set; } = "SQL Server";
 }
+
+public class SqlServerSharedProvisioningStateDto
+{
+    public string SharedLoginName { get; set; } = string.Empty;
+    public bool HasExistingDatabases { get; set; }
+    public string? EncryptedPassword { get; set; }
+}
+
+public class SqlServerSharedLoginCleanupStateDto
+{
+    public string SharedLoginName { get; set; } = string.Empty;
+    public bool CanDropLogin { get; set; }
+}
