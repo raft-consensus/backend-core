@@ -66,17 +66,24 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         ISqlStoredProcedureExecutor sqlExecutor,
         CancellationToken cancellationToken)
     {
-        var activeUsers = await sqlExecutor.QueryAsync(
-            "SELECT DISTINCT login_name FROM sys.dm_exec_sessions WHERE login_name IS NOT NULL AND login_name <> @ProvisioningAccount",
+        var activeDatabases = await sqlExecutor.QueryAsync(
+            """
+            SELECT DISTINCT DB_NAME(database_id)
+            FROM sys.dm_exec_sessions
+            WHERE login_name IS NOT NULL
+              AND login_name <> @ProvisioningAccount
+              AND database_id > 4
+              AND DB_NAME(database_id) LIKE 'raft\_u%' ESCAPE '\'
+            """,
             command => command.AddParameter("@ProvisioningAccount", ProvisioningAccount),
             reader => reader.GetString(0),
             cancellationToken);
 
-        foreach (var databaseUser in activeUsers)
+        foreach (var databaseName in activeDatabases)
         {
             await sqlExecutor.ExecuteAsync(
-                StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseUser,
-                command => command.AddParameter("@DatabaseUser", databaseUser),
+                StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseName,
+                command => command.AddParameter("@DatabaseName", databaseName),
                 cancellationToken);
         }
     }

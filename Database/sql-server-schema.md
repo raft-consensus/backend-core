@@ -654,6 +654,32 @@ BEGIN
 END
 GO
 
+CREATE OR ALTER PROCEDURE usp_Users_GetSharedSqlServerProvisioningState
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        SharedLoginName = CONCAT('raft_u', @UserId),
+        HasExistingDatabases = CASE WHEN EXISTS (
+            SELECT 1
+            FROM DatabaseInstances di
+            WHERE di.UserId = @UserId
+              AND di.Deleted_at IS NULL
+        ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END,
+        EncryptedPassword = (
+            SELECT TOP 1 ac.EncryptedPassword
+            FROM AccessCredentials ac
+            INNER JOIN DatabaseInstances di ON di.Id = ac.DatabaseInstanceId
+            WHERE di.UserId = @UserId
+              AND di.Deleted_at IS NULL
+              AND ac.Deleted_at IS NULL
+            ORDER BY di.Id
+        );
+END
+GO
+
 -- Solo devuelve la fila si @DatabaseInstanceId realmente pertenece a @UserId.
 -- La verificación de dueño vive aquí, no en C#.
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_GetDecryptableByOwner
@@ -725,6 +751,23 @@ BEGIN
 END
 GO
 
+CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetSharedLoginCleanupState
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        SharedLoginName = CONCAT('raft_u', @UserId),
+        CanDropLogin = CASE WHEN EXISTS (
+            SELECT 1
+            FROM DatabaseInstances di
+            WHERE di.UserId = @UserId
+              AND di.Deleted_at IS NULL
+        ) THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END;
+END
+GO
+
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_UpdateUsedSpace
     @Id INT,
     @UsedSpaceBytes BIGINT
@@ -739,17 +782,18 @@ BEGIN
 END
 GO
 
--- DatabaseUser es único por instancia, así que el job mapea el usuario MySQL que vio
--- conectado de vuelta a su fila en DatabaseInstances.
-CREATE OR ALTER PROCEDURE usp_DatabaseInstances_TouchActivityByDatabaseUser
-    @DatabaseUser NVARCHAR(128)
+-- DatabaseUser ahora es el login compartido del usuario de plataforma.
+-- Para conservar TTL por instancia, el job mapea la base de datos activa de vuelta a
+-- su fila en DatabaseInstances.
+CREATE OR ALTER PROCEDURE usp_DatabaseInstances_TouchActivityByDatabaseName
+    @DatabaseName NVARCHAR(128)
 AS
 BEGIN
     SET NOCOUNT ON;
 
     UPDATE DatabaseInstances
     SET LastActivity = SYSUTCDATETIME()
-    WHERE DatabaseUser = @DatabaseUser AND Deleted_at IS NULL;
+    WHERE DatabaseName = @DatabaseName AND Deleted_at IS NULL;
 END
 GO
 ```

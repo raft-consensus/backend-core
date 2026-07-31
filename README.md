@@ -256,7 +256,8 @@ All responses use this structure:
 
 - Entities with `Deleted_at` use soft delete.
 - `Users` prevents duplicates by `Provider + ProviderUserId`, enforced inside `usp_Users_UpsertFromOAuth` (not in C#).
-- On first login (`IsNewUser` from the upsert SP), `AuthService` triggers `IMySqlProvisioningService.ProvisionDatabaseAsync` to create a real MySQL database + scoped user automatically. A provisioning failure never blocks login — it's logged as a `ProvisioningFailed` audit event and the JWT is still issued.
+- `AuthService` only authenticates and issues JWTs. It does not provision databases during register/login.
+- Database provisioning is explicit and only happens through `POST /api/me/databases`.
 - `UserDashboard` is a read projection, not a domain table.
 - `serviceAvailability` is temporarily fixed at `100.0` until real monitoring is integrated.
 - `AuthController` only accepts Google and GitHub.
