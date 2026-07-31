@@ -6,7 +6,7 @@ services:
     container_name: ${CONTAINER_NAME:-raft-backend}
     restart: unless-stopped
     ports:
-      - "5133:8080"
+      - "127.0.0.1:8061:8080"
     volumes:
       - ./appsettings.json:/app/appsettings.json:ro
       - raft-backend-keys:/app/keys
