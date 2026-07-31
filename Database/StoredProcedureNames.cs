@@ -10,6 +10,7 @@ public static class StoredProcedureNames
     public const string Users_UpsertFromOAuth = "usp_Users_UpsertFromOAuth";
     public const string Users_RegisterWithPassword = "usp_Users_RegisterWithPassword";
     public const string Users_GetByEmailForLogin = "usp_Users_GetByEmailForLogin";
+    public const string Users_GetSharedSqlServerProvisioningState = "usp_Users_GetSharedSqlServerProvisioningState";
 
     public const string DatabaseInstances_GetAll = "usp_DatabaseInstances_GetAll";
     public const string DatabaseInstances_GetById = "usp_DatabaseInstances_GetById";
@@ -38,5 +39,6 @@ public static class StoredProcedureNames
     public const string DatabaseInstances_GetDueForPause = "usp_DatabaseInstances_GetDueForPause";
     public const string DatabaseInstances_GetDueForDelete = "usp_DatabaseInstances_GetDueForDelete";
     public const string DatabaseInstances_UpdateUsedSpace = "usp_DatabaseInstances_UpdateUsedSpace";
-    public const string DatabaseInstances_TouchActivityByDatabaseUser = "usp_DatabaseInstances_TouchActivityByDatabaseUser";
+    public const string DatabaseInstances_TouchActivityByDatabaseName = "usp_DatabaseInstances_TouchActivityByDatabaseName";
+    public const string DatabaseInstances_GetSharedLoginCleanupState = "usp_DatabaseInstances_GetSharedLoginCleanupState";
 }
