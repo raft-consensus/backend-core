@@ -9,8 +9,12 @@ using raft_backend.Interfaces;
 
 namespace raft_backend.Services;
 
-public partial class SqlServerProvisioningService : ISqlServerProvisioningService
+public partial class SqlServerProvisioningService : ISqlServerProvisioningService, IEngineProvisioningService
 {
+    public string EngineName => "SQL Server";
+
+    public Task<SqlServerProvisioningResultDto> ProvisionAsync(int userId, CancellationToken cancellationToken = default)
+        => ProvisionDatabaseAsync(userId, cancellationToken);
     private const int MaxProvisioningAttempts = 3;
 
     private readonly ISqlServerCommandExecutor _sqlServerExecutor;

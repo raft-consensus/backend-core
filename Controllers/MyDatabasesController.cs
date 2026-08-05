@@ -7,15 +7,9 @@ using raft_backend.Configuration;
 using raft_backend.DTOs;
 using raft_backend.Interfaces;
 using raft_backend.Response;
-using raft_backend.Services;
 
 namespace raft_backend.Controllers;
 
-// Self-service endpoints for the authenticated user's own databases. The user id always
-// comes from the JWT claim, never from a route/query parameter, so there is no way for a
-// caller to view, reveal, or provision data for another user (see UserDashboardController
-// for the admin-only, userId-by-route equivalent, and DatabaseInstancesController for the
-// admin-only raw CRUD over the DatabaseInstances table).
 [ApiController]
 [Authorize]
 [Route("api/me/databases")]
@@ -24,20 +18,20 @@ public class MyDatabasesController : ControllerBase
     private readonly IUserDashboardService _dashboardService;
     private readonly IAccessCredentialService _accessCredentialService;
     private readonly IAuditEventService _auditEventService;
-    private readonly ISqlServerProvisioningService _provisioningService;
+    private readonly IEnumerable<IEngineProvisioningService> _provisioningServices;
     private readonly SqlServerProvisioningOptions _provisioningOptions;
 
     public MyDatabasesController(
         IUserDashboardService dashboardService,
         IAccessCredentialService accessCredentialService,
         IAuditEventService auditEventService,
-        ISqlServerProvisioningService provisioningService,
+        IEnumerable<IEngineProvisioningService> provisioningServices,
         IOptions<SqlServerProvisioningOptions> provisioningOptions)
     {
         _dashboardService = dashboardService;
         _accessCredentialService = accessCredentialService;
         _auditEventService = auditEventService;
-        _provisioningService = provisioningService;
+        _provisioningServices = provisioningServices;
         _provisioningOptions = provisioningOptions.Value;
     }
 
@@ -62,13 +56,17 @@ public class MyDatabasesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var userId = GetUserId();
+        var requestedEngine = string.IsNullOrWhiteSpace(request.Engine) ? "SQL Server" : request.Engine.Trim();
 
-        if (!string.Equals(request.Engine?.Trim(), "SQL Server", StringComparison.OrdinalIgnoreCase))
+        var service = _provisioningServices.FirstOrDefault(s =>
+            string.Equals(s.EngineName, requestedEngine, StringComparison.OrdinalIgnoreCase));
+
+        if (service is null)
         {
             return BadRequest(new ServiceResponse<SqlServerProvisioningResultDto>
             {
                 Success = false,
-                Message = "The requested engine is offered by another team and is not yet integrated."
+                Message = $"Engine '{requestedEngine}' is not supported. Supported engines are: {string.Join(", ", _provisioningServices.Select(s => s.EngineName))}."
             });
         }
 
@@ -85,30 +83,28 @@ public class MyDatabasesController : ControllerBase
         SqlServerProvisioningResultDto result;
         try
         {
-            result = await _provisioningService.ProvisionDatabaseAsync(userId, cancellationToken);
+            result = await service.ProvisionAsync(userId, cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             await _auditEventService.CreateAsync(new AuditEventCreateDto
             {
                 UserId = userId,
                 EventType = "ProvisioningFailed",
-                Description = "Self-service SQL Server database provisioning failed."
+                Description = $"Self-service {requestedEngine} database provisioning failed: {ex.Message}"
             }, cancellationToken);
 
             return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<SqlServerProvisioningResultDto>
             {
                 Success = false,
-                Message = "The database could not be provisioned. Please try again in a few minutes."
+                Message = $"The {requestedEngine} database could not be provisioned. Please try again in a few minutes."
             });
         }
 
-        // The password is only ever returned here, in plaintext, at creation time — it is
-        // encrypted at rest afterward and can only be retrieved again via RevealPassword.
         return CreatedAtAction(nameof(GetMyDatabases), null, new ServiceResponse<SqlServerProvisioningResultDto>
         {
             Success = true,
-            Message = "Database provisioned successfully. Save the password now — it will not be shown in full again.",
+            Message = $"{requestedEngine} database provisioned successfully. Save the password now — it will not be shown in full again.",
             Data = result
         });
     }

@@ -98,6 +98,9 @@ builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth
 builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
 builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
 builder.Services.Configure<SqlServerProvisioningOptions>(builder.Configuration.GetSection("SqlServerProvisioning"));
+builder.Services.Configure<PostgresProvisioningOptions>(builder.Configuration.GetSection("PostgresProvisioning"));
+builder.Services.Configure<MySqlProvisioningOptions>(builder.Configuration.GetSection("MySqlProvisioning"));
+builder.Services.Configure<MongoProvisioningOptions>(builder.Configuration.GetSection("MongoProvisioning"));
 
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Frontend");
@@ -237,6 +240,10 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
 builder.Services.AddScoped<ISqlServerCommandExecutor, SqlServerCommandExecutor>();
 builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningService>();
+builder.Services.AddScoped<IEngineProvisioningService, SqlServerProvisioningService>();
+builder.Services.AddScoped<IEngineProvisioningService, PostgresProvisioningService>();
+builder.Services.AddScoped<IEngineProvisioningService, MySqlProvisioningService>();
+builder.Services.AddScoped<IEngineProvisioningService, MongoProvisioningService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();

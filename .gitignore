@@ -1,5 +1,39 @@
-/obj
-/bin
+## .NET Build & Compilation Outputs
+[Bb]in/
+[Oo]bj/
+out/
+publish/
+*.PrimaryInteropAssembly.dll
+
+## Visual Studio & IDEs
+.vs/
+.vscode/
 .idea/
-appsettings.json
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+
+## Sensitive Security Keys & Certificates
 /keys
+*.pem
+*.p12
+*.pfx
+*.key
+
+## Local Configuration & Environment Files
+appsettings.json
+appsettings.*.json
+.env
+.env.local
+
+## Test Results & Coverage
+TestResults/
+coverage/
+
+## OS Generated Files
+[Tt]humbs.db
+.DS_Store
+ehthumbs.db
+Desktop.ini
