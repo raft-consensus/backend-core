@@ -24,7 +24,7 @@ Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos ho
 
 **CORS:** el API acepta los orígenes configurados en `Frontend:Origins`; si esa lista viene vacía, usa `Frontend:BaseUrl` como fallback. En ambos casos, el backend normaliza el valor a origen puro (`scheme + host + port`) antes de aplicarlo.
 
-**Arquitectura por células:** este backend administra la célula de Raft. Hoy el flujo activo aprovisiona SQL Server. MySQL, PostgreSQL u otros motores quedan como extensibilidad futura para otras células y deben integrarse mediante contratos públicos, no mezclarse con el camino principal.
+**Arquitectura por células:** este backend administra la célula de Raft. SQL Server sigue siendo el core compartido, pero MySQL, PostgreSQL y MongoDB ya están integrados como motores soportados por este backend cuando su conexión externa está disponible. El camino principal no se mezcla con contratos futuros: ya existe un catálogo dinámico de motores y cada uno declara su disponibilidad en runtime.
 
 **Rate limiting:**
 
@@ -84,9 +84,15 @@ Sin autenticación. Devuelve el catálogo de motores/capacidades registrados en 
     },
     {
       "name": "PostgreSQL",
-      "supportedByThisCell": false,
-      "status": "Unavailable",
-      "notes": "The backend has the contract wired, but the runtime PostgreSQL driver is not available yet."
+      "supportedByThisCell": true,
+      "status": "Available",
+      "notes": "This cell can provision and manage PostgreSQL databases."
+    },
+    {
+      "name": "MongoDB",
+      "supportedByThisCell": true,
+      "status": "Available",
+      "notes": "This cell can provision and manage MongoDB databases."
     }
   ]
 }
@@ -185,6 +191,8 @@ Si el usuario todavía no tiene ninguna BD, `data` viene como lista vacía — n
 
 Crea una base del usuario autenticado. El request acepta `engine` y enruta a `SQL Server`, `MySQL` o `PostgreSQL` según el valor recibido. Alias aceptados: `sqlserver`, `mysql`, `postgres`, `postgresql`.
 
+Nota técnica: en PostgreSQL el backend reutiliza un login compartido por usuario (`raft_u{userId}`) y lo crea de forma idempotente. Si el rol ya existe, actualiza la contraseña en lugar de abortar con `42710: role already exists`, lo que permite aprovisionar la segunda y siguientes bases del mismo usuario sin error.
+
 ### `POST /api/me/databases/{databaseInstanceId}/pause`
 
 Pausa una base propia del usuario autenticado. Si la base no le pertenece, responde `404`.
@@ -215,6 +223,145 @@ Revela la contraseña de una instancia — solo si pertenece al usuario autentic
 `404` si el `databaseInstanceId` no existe o no le pertenece al usuario del token (mismo mensaje en ambos casos, a propósito — no revela si la instancia existe pero es de otro).
 
 Con esto más lo que ya trae `GET /api/me/databases`, el frontend tiene todos los campos que pide el entregable: host, puerto, nombre de BD, usuario, contraseña (bajo demanda), motor, fecha de creación y estado.
+
+### IA con API-Key
+
+La IA se maneja en dos capas:
+
+- una capa de administración de claves, protegida con JWT;
+- una capa pública de generación, protegida con `X-API-Key`.
+
+#### Capa 1 — gestión de claves
+
+| Método | Ruta | Auth | Uso |
+| --- | --- | --- | --- |
+| `GET` | `/api/me/ai-keys` | JWT | Lista las API-Keys del usuario autenticado, con métricas acumuladas. |
+| `POST` | `/api/me/ai-keys` | JWT | Crea una API-Key nueva y devuelve el secreto solo una vez. |
+| `POST` | `/api/me/ai-keys/{id}/rotate` | JWT | Regenera la clave y devuelve el nuevo secreto solo una vez. |
+| `DELETE` | `/api/me/ai-keys/{id}` | JWT | Revoca la clave. |
+
+Ejemplo de creación:
+
+```http
+POST /api/me/ai-keys
+Authorization: Bearer <jwt>
+Content-Type: application/json
+
+{
+  "name": "Mi clave de pruebas"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "success": true,
+  "message": "AI API key created successfully. Save the secret now; it will not be shown again.",
+  "data": {
+    "key": {
+      "id": 1,
+      "userId": 5,
+      "name": "Mi clave de pruebas",
+      "keyPrefix": "AbCd1234",
+      "status": "Active",
+      "createdAt": "2026-08-05T12:00:00Z",
+      "updatedAt": null,
+      "revokedAt": null,
+      "lastUsedAt": null,
+      "totalRequests": 0,
+      "totalPromptTokens": 0,
+      "totalCompletionTokens": 0,
+      "totalTokens": 0,
+      "approxCostUsd": 0
+    },
+    "secret": "clave-que-solo-se-muestra-una-vez"
+  }
+}
+```
+
+#### Capa 2 — generación de IA
+
+| Método | Ruta | Auth | Uso |
+| --- | --- | --- | --- |
+| `POST` | `/api/ai/generate` | `X-API-Key` | Genera una respuesta de IA, registra consumo y actualiza métricas por clave. |
+
+La llamada se hace con header `X-API-Key`:
+
+```http
+POST /api/ai/generate
+Content-Type: application/json
+X-API-Key: <secret>
+```
+
+Body:
+
+```json
+{
+  "provider": "cell-a",
+  "prompt": "Genera una consulta para listar usuarios con bases activas",
+  "mode": "sql",
+  "context": "Usamos SQL Server"
+}
+```
+
+`provider` es opcional. Si lo mandas, el backend intenta usar ese proveedor primero cuando existe en la lista configurada; si no, recorre los proveedores por prioridad.
+
+Modos soportados:
+
+- `sql`
+- `summary`
+- `recommendation`
+- `general` o vacío
+
+El campo `provider` de la respuesta indica la célula/proveedor que terminó atendiendo la solicitud después del failover.
+
+Ejemplo de respuesta:
+
+```json
+{
+  "success": true,
+  "message": "AI response generated successfully.",
+  "data": {
+    "provider": "local",
+    "model": "heuristic-ai",
+    "mode": "sql",
+    "keyId": 1,
+    "keyPrefix": "AbCd1234",
+    "result": "Puedes usar una consulta como esta: ...",
+    "promptTokens": 42,
+    "completionTokens": 120,
+    "totalTokens": 162,
+    "approxCostUsd": 0,
+    "createdAt": "2026-08-05T12:30:00Z"
+  }
+}
+```
+
+Uso recomendado desde frontend o curl:
+
+```bash
+curl -X POST "https://<api-host>/api/ai/generate" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <secret>" \
+  -d '{"prompt":"Resume este texto","mode":"summary","context":"..."}'
+```
+
+Si `AiService:Providers` está configurado, el backend intenta esos proveedores en orden de prioridad y usa el primero que responda correctamente. Si no hay lista de proveedores, usa el proveedor legacy definido por `AiService:Endpoint`, `ApiKey` y `Model`. Si nada está configurado, responde con un generador local heurístico para que el flujo siga siendo funcional en demo.
+
+Rate limiting:
+
+- gestión de claves: `ai-key-management`
+- generación: `ai-api`
+
+Cada request válida actualiza:
+
+- `TotalRequests`
+- `TotalPromptTokens`
+- `TotalCompletionTokens`
+- `TotalTokens`
+- `ApproxCostUsd`
+- `LastUsedAt`
 
 ---
 

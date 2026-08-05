@@ -14,6 +14,7 @@ public class RaftDbContext : DbContext
     public DbSet<DatabaseInstance> DatabaseInstances => Set<DatabaseInstance>();
     public DbSet<AccessCredential> AccessCredentials => Set<AccessCredential>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<AiApiKey> AiApiKeys => Set<AiApiKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -108,6 +109,38 @@ public class RaftDbContext : DbContext
                 .WithMany(x => x.AuditEvents)
                 .HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<AiApiKey>(entity =>
+        {
+            entity.ToTable("AiApiKeys");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.KeyPrefix).HasMaxLength(12).IsRequired();
+            entity.Property(x => x.KeyHash).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Status)
+                .HasMaxLength(20)
+                .IsRequired()
+                .HasDefaultValue("Active");
+            entity.Property(x => x.Created_at)
+                .HasColumnName("Created_at")
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.Property(x => x.Updated_at).HasColumnName("Updated_at");
+            entity.Property(x => x.Revoked_at).HasColumnName("Revoked_at");
+            entity.Property(x => x.LastUsedAt).HasColumnName("LastUsedAt");
+            entity.Property(x => x.TotalRequests).HasDefaultValue(0);
+            entity.Property(x => x.TotalPromptTokens).HasDefaultValue(0);
+            entity.Property(x => x.TotalCompletionTokens).HasDefaultValue(0);
+            entity.Property(x => x.TotalTokens).HasDefaultValue(0);
+            entity.Property(x => x.ApproxCostUsd).HasColumnType("decimal(18,6)").HasDefaultValue(0m);
+            entity.HasIndex(x => x.KeyHash).IsUnique();
+            entity.HasIndex(x => x.UserId);
+            entity.HasIndex(x => new { x.UserId, x.Status });
+            entity.HasQueryFilter(x => x.Revoked_at == null || x.Status == "Active" || x.Status == "Revoked");
+            entity.HasOne(x => x.User)
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

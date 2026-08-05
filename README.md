@@ -37,9 +37,38 @@ Define these connection strings in `appsettings.json` or environment variables:
   "MySqlProvisioning": {
     "PublicHost": "localhost",
     "PublicPort": 3306,
-    "DefaultMaxUserConnections": 5,
+    "MaxDatabasesPerUser": 3,
     "DefaultMaxSpaceBytes": 20971520,
     "PasswordLength": 24
+  },
+  "AiService": {
+    "Providers": [
+      {
+        "Name": "cell-a",
+        "Endpoint": "https://ai-a.example.com/v1/chat/completions",
+        "ApiKey": "provider-a-secret",
+        "Model": "gpt-4o-mini",
+        "Priority": 1,
+        "RequestTimeoutSeconds": 30,
+        "MaxOutputTokens": 512
+      },
+      {
+        "Name": "cell-b",
+        "Endpoint": "https://ai-b.example.com/v1/chat/completions",
+        "ApiKey": "provider-b-secret",
+        "Model": "gpt-4o-mini",
+        "Priority": 2,
+        "RequestTimeoutSeconds": 30,
+        "MaxOutputTokens": 512
+      }
+    ],
+    "Endpoint": "https://api.openai.com/v1/chat/completions",
+    "ApiKey": "optional-legacy-provider-key",
+    "Model": "gpt-4o-mini",
+    "RequestTimeoutSeconds": 30,
+    "MaxOutputTokens": 512,
+    "ApiKeyRateLimitPerMinute": 20,
+    "ManagementRateLimitPerMinute": 20
   },
   "DataProtection": {
     "KeysPath": "/app/keys"
@@ -73,6 +102,10 @@ This project is **DB-first**: there is no EF Core Migrations and no runtime sche
 `RaftDb` is the shared SQL Server database used by the Raft backend. Other teams may have their own backends, but if they use the shared SQL Server, they must point to their own agreed contract and credentials.
 
 The `MySqlProvisioning` and `PostgresProvisioning` connection strings are part of the backend contract for multi-engine provisioning. If the runtime driver or external cell is not available, the corresponding engine is reported as unavailable at the API level.
+
+PostgreSQL provisioning reuses a shared login per user (`raft_u{userId}`) across all instances. The backend now provisions that login idempotently: if the role already exists, it updates the password instead of failing with `42710: role already exists`. That lets the same user create second and subsequent PostgreSQL databases without breaking the provisioning flow.
+
+`AiService` is optional. If `Providers` is configured, the backend will try those providers by priority and, if you send `AiGenerateRequestDto.Provider`, it will try that provider first when it exists in the list. If no providers are defined, it falls back to the legacy single-provider fields (`Endpoint`, `ApiKey`, `Model`). If nothing is configured, it falls back to a local heuristic responder so the API still works for demos and testing.
 
 `RaftDbContext`'s fluent configuration (`Database/RaftDbContext.cs`) documents the same shape in C#, but it is never used to generate or apply schema — only as the connection source for `ISqlStoredProcedureExecutor`.
 

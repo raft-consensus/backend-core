@@ -32,6 +32,15 @@ public static class StoredProcedureNames
     public const string AuditEvents_Update = "usp_AuditEvents_Update";
     public const string AuditEvents_SoftDelete = "usp_AuditEvents_SoftDelete";
 
+    public const string AiApiKeys_GetAllByUserId = "usp_AiApiKeys_GetAllByUserId";
+    public const string AiApiKeys_GetById = "usp_AiApiKeys_GetById";
+    public const string AiApiKeys_GetByIdAndUserId = "usp_AiApiKeys_GetByIdAndUserId";
+    public const string AiApiKeys_GetActiveByKeyHash = "usp_AiApiKeys_GetActiveByKeyHash";
+    public const string AiApiKeys_Create = "usp_AiApiKeys_Create";
+    public const string AiApiKeys_Rotate = "usp_AiApiKeys_Rotate";
+    public const string AiApiKeys_Revoke = "usp_AiApiKeys_Revoke";
+    public const string AiApiKeys_RecordUsage = "usp_AiApiKeys_RecordUsage";
+
     public const string PlatformMetrics_Get = "usp_PlatformMetrics_Get";
     public const string UserDashboard_GetByUserId = "usp_UserDashboard_GetByUserId";
 
