@@ -118,7 +118,7 @@ builder.Services.AddRateLimiter(options =>
             partitionKey,
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 3,
+                PermitLimit = 10,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 AutoReplenishment = true
@@ -158,6 +158,11 @@ builder.Services.AddOptions<MySqlProvisioningOptions>()
 
 builder.Services.AddOptions<PostgresProvisioningOptions>()
     .Bind(builder.Configuration.GetSection("PostgresProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<MongoProvisioningOptions>()
+    .Bind(builder.Configuration.GetSection("MongoProvisioning"))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
@@ -304,6 +309,7 @@ builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningS
 builder.Services.AddScoped<IDatabaseProvisioningService, SqlServerProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningService, MySqlProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningService, PostgresProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningService, MongoProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningServiceResolver, DatabaseProvisioningServiceResolver>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
@@ -320,8 +326,10 @@ var app = builder.Build();
 
 var forwardedHeadersOptions = new ForwardedHeadersOptions
 {
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost
 };
+forwardedHeadersOptions.KnownNetworks.Clear();
+forwardedHeadersOptions.KnownProxies.Clear();
 
 app.UseForwardedHeaders(forwardedHeadersOptions);
 

@@ -99,11 +99,22 @@ public class AccessCredentialService : IAccessCredentialService
 
         var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
 
-        return new AccessCredentialRevealDto
+        try
         {
-            DatabaseInstanceId = databaseInstanceId,
-            Password = protector.Unprotect(encryptedPassword)
-        };
+            return new AccessCredentialRevealDto
+            {
+                DatabaseInstanceId = databaseInstanceId,
+                Password = protector.Unprotect(encryptedPassword)
+            };
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            return new AccessCredentialRevealDto
+            {
+                DatabaseInstanceId = databaseInstanceId,
+                Password = "[Clave no desencriptable: requiere regeneración]"
+            };
+        }
     }
 
     private static AccessCredentialReadDto Map(DbDataReader reader)
