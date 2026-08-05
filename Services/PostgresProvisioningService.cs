@@ -138,7 +138,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseUser);
         await KillSessionsAsync(instance.DatabaseName, cancellationToken);
         await ExecuteAsync(
-            $"""REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM {instance.DatabaseUser};""",
+            $"""REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";""",
             null,
             cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
@@ -152,7 +152,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseName);
         ValidateIdentifier(instance.DatabaseUser);
         await ExecuteAsync(
-            $"""GRANT CONNECT ON DATABASE "{instance.DatabaseName}" TO {instance.DatabaseUser};""",
+            $"""GRANT CONNECT ON DATABASE "{instance.DatabaseName}" TO "{instance.DatabaseUser}";""",
             null,
             cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
@@ -173,7 +173,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
 
         if (isLastDatabase)
         {
-            await ExecuteAsync($"""DROP ROLE IF EXISTS {instance.DatabaseUser};""", null, cancellationToken);
+            await ExecuteAsync($"""DROP ROLE IF EXISTS "{instance.DatabaseUser}";""", null, cancellationToken);
         }
 
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
@@ -239,17 +239,29 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         string password,
         CancellationToken cancellationToken)
     {
-        await ExecuteAsync($"""CREATE ROLE {loginName} WITH LOGIN PASSWORD '{password}';""", null, cancellationToken);
-        await ExecuteAsync($"""CREATE DATABASE "{databaseName}" OWNER {loginName};""", null, cancellationToken);
         await ExecuteAsync(
-            $"""GRANT CONNECT ON DATABASE "{databaseName}" TO {loginName};""",
+            $"""
+             DO $$
+             BEGIN
+                 IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '{loginName}') THEN
+                     CREATE ROLE "{loginName}" WITH LOGIN PASSWORD '{password}' NOCREATEDB NOCREATEROLE INHERIT;
+                 ELSE
+                     ALTER ROLE "{loginName}" WITH PASSWORD '{password}';
+                 END IF;
+             END $$;
+             """,
+            null,
+            cancellationToken);
+        await ExecuteAsync($"""CREATE DATABASE "{databaseName}" OWNER "{loginName}";""", null, cancellationToken);
+        await ExecuteAsync(
+            $"""GRANT CONNECT ON DATABASE "{databaseName}" TO "{loginName}";""",
             null,
             cancellationToken);
         await ExecuteOnDatabaseAsync(
             databaseName,
             $"""
-             GRANT USAGE, CREATE ON SCHEMA public TO {loginName};
-             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {loginName};
+             GRANT USAGE, CREATE ON SCHEMA public TO "{loginName}";
+             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "{loginName}";
              """,
             cancellationToken);
     }
@@ -263,7 +275,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
             var remaining = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
             if (remaining.Count == 0)
             {
-                await ExecuteAsync($"""DROP ROLE IF EXISTS {loginName};""", null, cancellationToken);
+                await ExecuteAsync($"""DROP ROLE IF EXISTS "{loginName}";""", null, cancellationToken);
             }
         }
         catch (Exception cleanupEx)

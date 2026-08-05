@@ -797,3 +797,213 @@ BEGIN
 END
 GO
 ```
+
+---
+
+## 9. IA — API Keys y consumo
+
+### 9.1 Tabla
+
+```sql
+CREATE TABLE dbo.AiApiKeys (
+    Id INT IDENTITY(1,1) NOT NULL,
+    UserId INT NOT NULL,
+    Name NVARCHAR(120) NOT NULL,
+    KeyPrefix NVARCHAR(12) NOT NULL,
+    KeyHash NVARCHAR(128) NOT NULL,
+    Status NVARCHAR(20) NOT NULL CONSTRAINT DF_AiApiKeys_Status DEFAULT ('Active'),
+    Created_at DATETIME2 NOT NULL CONSTRAINT DF_AiApiKeys_Created_at DEFAULT (SYSUTCDATETIME()),
+    Updated_at DATETIME2 NULL,
+    Revoked_at DATETIME2 NULL,
+    LastUsedAt DATETIME2 NULL,
+    TotalRequests BIGINT NOT NULL CONSTRAINT DF_AiApiKeys_TotalRequests DEFAULT (0),
+    TotalPromptTokens BIGINT NOT NULL CONSTRAINT DF_AiApiKeys_TotalPromptTokens DEFAULT (0),
+    TotalCompletionTokens BIGINT NOT NULL CONSTRAINT DF_AiApiKeys_TotalCompletionTokens DEFAULT (0),
+    TotalTokens BIGINT NOT NULL CONSTRAINT DF_AiApiKeys_TotalTokens DEFAULT (0),
+    ApproxCostUsd DECIMAL(18,6) NOT NULL CONSTRAINT DF_AiApiKeys_ApproxCostUsd DEFAULT (0),
+    CONSTRAINT PK_AiApiKeys PRIMARY KEY (Id),
+    CONSTRAINT FK_AiApiKeys_Users_UserId FOREIGN KEY (UserId) REFERENCES dbo.Users (Id)
+);
+
+CREATE UNIQUE INDEX IX_AiApiKeys_KeyHash ON dbo.AiApiKeys (KeyHash);
+
+CREATE INDEX IX_AiApiKeys_UserId ON dbo.AiApiKeys (UserId);
+
+CREATE INDEX IX_AiApiKeys_UserId_Status ON dbo.AiApiKeys (UserId, Status);
+```
+
+### 9.2 Stored Procedures
+
+#### 9.2.1 `usp_AiApiKeys_GetAllByUserId`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetAllByUserId
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE UserId = @UserId
+    ORDER BY Id DESC;
+END
+```
+
+#### 9.2.2 `usp_AiApiKeys_GetById`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetById
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE Id = @Id;
+END
+```
+
+#### 9.2.3 `usp_AiApiKeys_GetByIdAndUserId`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetByIdAndUserId
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE Id = @Id
+      AND UserId = @UserId;
+END
+```
+
+#### 9.2.4 `usp_AiApiKeys_GetActiveByKeyHash`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetActiveByKeyHash
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE KeyHash = @KeyHash
+      AND Status = 'Active'
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 9.2.5 `usp_AiApiKeys_Create`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Create
+    @UserId INT,
+    @Name NVARCHAR(120),
+    @KeyPrefix NVARCHAR(12),
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT 1 FROM dbo.AiApiKeys WHERE KeyHash = @KeyHash)
+    BEGIN
+        RETURN;
+    END
+
+    INSERT INTO dbo.AiApiKeys (UserId, Name, KeyPrefix, KeyHash, Status, Created_at)
+    VALUES (@UserId, @Name, @KeyPrefix, @KeyHash, 'Active', SYSUTCDATETIME());
+
+    DECLARE @NewId INT = SCOPE_IDENTITY();
+    EXEC dbo.usp_AiApiKeys_GetById @Id = @NewId;
+END
+```
+
+#### 9.2.6 `usp_AiApiKeys_Rotate`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Rotate
+    @Id INT,
+    @UserId INT,
+    @KeyPrefix NVARCHAR(12),
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET KeyPrefix = @KeyPrefix,
+        KeyHash = @KeyHash,
+        Status = 'Active',
+        Revoked_at = NULL,
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        RETURN;
+    END
+
+    EXEC dbo.usp_AiApiKeys_GetById @Id = @Id;
+END
+```
+
+#### 9.2.7 `usp_AiApiKeys_Revoke`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Revoke
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET Status = 'Revoked',
+        Revoked_at = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 9.2.8 `usp_AiApiKeys_RecordUsage`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_RecordUsage
+    @Id INT,
+    @PromptTokens BIGINT,
+    @CompletionTokens BIGINT,
+    @ApproxCostUsd DECIMAL(18,6)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET TotalRequests = TotalRequests + 1,
+        TotalPromptTokens = TotalPromptTokens + @PromptTokens,
+        TotalCompletionTokens = TotalCompletionTokens + @CompletionTokens,
+        TotalTokens = TotalTokens + (@PromptTokens + @CompletionTokens),
+        ApproxCostUsd = ApproxCostUsd + @ApproxCostUsd,
+        LastUsedAt = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND Revoked_at IS NULL;
+END
+```

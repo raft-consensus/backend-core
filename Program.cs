@@ -107,6 +107,40 @@ builder.Services.AddRateLimiter(options =>
             });
     });
 
+    options.AddPolicy("ai-key-management", context =>
+    {
+        var partitionKey = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
+    options.AddPolicy("ai-api", context =>
+    {
+        var apiKey = context.Request.Headers["X-API-Key"].ToString();
+        var partitionKey = string.IsNullOrWhiteSpace(apiKey)
+            ? context.Connection.RemoteIpAddress?.ToString() ?? "unknown"
+            : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(apiKey))).ToLowerInvariant();
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
     // Provisioning hits the real MySQL server (CREATE DATABASE/USER), so it's throttled
     // per-user to keep abuse low while still allowing a few retries per minute.
     options.AddPolicy("database-provisioning", context =>
@@ -158,6 +192,11 @@ builder.Services.AddOptions<MySqlProvisioningOptions>()
 
 builder.Services.AddOptions<PostgresProvisioningOptions>()
     .Bind(builder.Configuration.GetSection("PostgresProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<AiServiceOptions>()
+    .Bind(builder.Configuration.GetSection("AiService"))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
@@ -318,6 +357,8 @@ builder.Services.AddScoped<IAccessCredentialService, AccessCredentialService>();
 builder.Services.AddScoped<IAuditEventService, AuditEventService>();
 builder.Services.AddScoped<IPlatformMetricsService, PlatformMetricsService>();
 builder.Services.AddScoped<IUserDashboardService, UserDashboardService>();
+builder.Services.AddScoped<IAiApiKeyService, AiApiKeyService>();
+builder.Services.AddScoped<IAiService, AiService>();
 builder.Services.AddSingleton<ISecurePasswordGenerator, SecurePasswordGenerator>();
 builder.Services.AddSingleton<IApiAvailabilityTracker, ApiAvailabilityTracker>();
 builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
