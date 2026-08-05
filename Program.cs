@@ -75,6 +75,38 @@ builder.Services.AddRateLimiter(options =>
             });
     });
 
+    options.AddPolicy("admin-ops", context =>
+    {
+        var partitionKey = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
+    options.AddPolicy("database-management", context =>
+    {
+        var partitionKey = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
     // Provisioning hits the real MySQL server (CREATE DATABASE/USER), so it's throttled
     // per-user to keep abuse low while still allowing a few retries per minute.
     options.AddPolicy("database-provisioning", context =>
@@ -94,26 +126,54 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
-builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
-builder.Services.Configure<OAuthOptions>(builder.Configuration.GetSection("OAuth"));
-builder.Services.Configure<LifecycleJobOptions>(builder.Configuration.GetSection("LifecycleJob"));
-builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
-builder.Services.Configure<SqlServerProvisioningOptions>(builder.Configuration.GetSection("SqlServerProvisioning"));
+builder.Services.AddOptions<JwtOptions>()
+    .Bind(builder.Configuration.GetSection("Jwt"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<OAuthOptions>()
+    .Bind(builder.Configuration.GetSection("OAuth"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<LifecycleJobOptions>()
+    .Bind(builder.Configuration.GetSection("LifecycleJob"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<FrontendOptions>()
+    .Bind(builder.Configuration.GetSection("Frontend"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<SqlServerProvisioningOptions>()
+    .Bind(builder.Configuration.GetSection("SqlServerProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<MySqlProvisioningOptions>()
+    .Bind(builder.Configuration.GetSection("MySqlProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<PostgresProvisioningOptions>()
+    .Bind(builder.Configuration.GetSection("PostgresProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.Configure<ExternalCellConnectionStrings>(builder.Configuration.GetSection("ConnectionStrings"));
 
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: Frontend");
 
-var origins = builder.Configuration
-    .GetSection("Frontend:Origins")
-    .Get<string[]>() ?? [];
+var origins = frontendOptions.GetAllowedOrigins();
 
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
     {
         policy
-            .WithOrigins(origins)
+            .WithOrigins(origins.ToArray())
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
@@ -140,6 +200,8 @@ var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
 
 var oauthOptions = builder.Configuration.GetSection("OAuth").Get<OAuthOptions>()
     ?? throw new InvalidOperationException("Missing configuration section: OAuth");
+
+ValidateSecureRuntimeConfiguration(builder.Environment, frontendOptions, jwtOptions, oauthOptions, origins);
 
 builder.Services.AddDbContext<RaftDbContext>(options =>
 {
@@ -239,6 +301,10 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<ISqlStoredProcedureExecutor, SqlStoredProcedureExecutor>();
 builder.Services.AddScoped<ISqlServerCommandExecutor, SqlServerCommandExecutor>();
 builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningService, SqlServerProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningService, MySqlProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningService, PostgresProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningServiceResolver, DatabaseProvisioningServiceResolver>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDatabaseInstanceService, DatabaseInstanceService>();
@@ -247,6 +313,7 @@ builder.Services.AddScoped<IAuditEventService, AuditEventService>();
 builder.Services.AddScoped<IPlatformMetricsService, PlatformMetricsService>();
 builder.Services.AddScoped<IUserDashboardService, UserDashboardService>();
 builder.Services.AddSingleton<ISecurePasswordGenerator, SecurePasswordGenerator>();
+builder.Services.AddSingleton<IApiAvailabilityTracker, ApiAvailabilityTracker>();
 builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
 
 var app = builder.Build();
@@ -255,16 +322,32 @@ var forwardedHeadersOptions = new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 };
-forwardedHeadersOptions.KnownNetworks.Clear();
-forwardedHeadersOptions.KnownProxies.Clear();
 
 app.UseForwardedHeaders(forwardedHeadersOptions);
 
-app.MapOpenApi();
-app.MapScalarApiReference();
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+}
 
 app.UseHttpsRedirection();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+app.Use(async (context, next) =>
+{
+    var availabilityTracker = context.RequestServices.GetRequiredService<IApiAvailabilityTracker>();
+
+    try
+    {
+        await next();
+    }
+    finally
+    {
+        availabilityTracker.RecordResponse(context.Response.StatusCode);
+    }
+});
+
 app.UseCors("Frontend");
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -281,4 +364,48 @@ static string BuildProvisioningConnectionString(string raftConnectionString)
     };
 
     return builder.ConnectionString;
+}
+
+static void ValidateSecureRuntimeConfiguration(
+    IWebHostEnvironment environment,
+    FrontendOptions frontendOptions,
+    JwtOptions jwtOptions,
+    OAuthOptions oauthOptions,
+    IReadOnlyCollection<string> allowedOrigins)
+{
+    if (allowedOrigins.Count == 0)
+    {
+        throw new InvalidOperationException("No valid frontend origins were configured. Set Frontend:BaseUrl or Frontend:Origins.");
+    }
+
+    if (!environment.IsDevelopment())
+    {
+        EnsureNotPlaceholder(jwtOptions.SigningKey, "Jwt:SigningKey");
+        EnsureNotPlaceholder(oauthOptions.GoogleClientId, "OAuth:GoogleClientId");
+        EnsureNotPlaceholder(oauthOptions.GoogleClientSecret, "OAuth:GoogleClientSecret");
+        EnsureNotPlaceholder(oauthOptions.GitHubClientId, "OAuth:GitHubClientId");
+        EnsureNotPlaceholder(oauthOptions.GitHubClientSecret, "OAuth:GitHubClientSecret");
+        EnsureNotPlaceholder(frontendOptions.BaseUrl, "Frontend:BaseUrl");
+    }
+
+    if (jwtOptions.SigningKey.Length < 32)
+    {
+        throw new InvalidOperationException("Jwt:SigningKey must be at least 32 characters long.");
+    }
+}
+
+static void EnsureNotPlaceholder(string value, string configurationKey)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        throw new InvalidOperationException($"Missing required configuration value: {configurationKey}.");
+    }
+
+    var normalized = value.Trim();
+    if (normalized.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
+        normalized.Contains("REPLACE", StringComparison.OrdinalIgnoreCase) ||
+        normalized.Contains("TODO", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException($"Configuration value {configurationKey} still looks like a placeholder.");
+    }
 }

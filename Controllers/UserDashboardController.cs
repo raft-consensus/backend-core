@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using raft_backend.DTOs;
 using raft_backend.Response;
 using raft_backend.Services;
@@ -8,6 +9,7 @@ namespace raft_backend.Controllers;
 
 [ApiController]
 [Authorize(Policy = "AdminOnly")]
+[EnableRateLimiting("admin-ops")]
 [Route("api/users/{userId:int}/dashboard")]
 public class UserDashboardController : ControllerBase
 {

@@ -31,11 +31,11 @@ Define these connection strings in `appsettings.json` or environment variables:
     "GitHubClientSecret": "github-client-secret"
   },
   "Frontend": {
-    "BaseUrl": "https://raft.andrescortes.dev",
+    "BaseUrl": "http://localhost:4200",
     "CallbackPath": "/auth/callback"
   },
   "MySqlProvisioning": {
-    "PublicHost": "db.andrescortes.dev",
+    "PublicHost": "localhost",
     "PublicPort": 3306,
     "DefaultMaxUserConnections": 5,
     "DefaultMaxSpaceBytes": 20971520,
@@ -51,7 +51,7 @@ Important note: `appsettings.json` still contains sample values and is not yet w
 
 `ConnectionStrings:RaftDb` must point to the shared SQL Server instance in the VPS. If that host, port, or credentials change later, only `appsettings.json` or the corresponding environment variables need to be updated; the backend code reads them through configuration.
 
-`Frontend:BaseUrl` drives two things: it's the only origin allowed by CORS (`Program.cs`, policy `"Frontend"`), and `AuthController` redirects there (`{BaseUrl}{CallbackPath}#access_token=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. See [`API.md`](API.md) for the exact contract.
+`Frontend:BaseUrl` drives the OAuth callback redirect (`{BaseUrl}{CallbackPath}#access_token=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. For CORS, `Program.cs` accepts `Frontend:Origins` first and falls back to `Frontend:BaseUrl` if that list is empty. See [`API.md`](API.md) for the exact contract.
 
 ## Roles and authorization
 
@@ -72,7 +72,7 @@ This project is **DB-first**: there is no EF Core Migrations and no runtime sche
 - [`Database/sql-server-schema.md`](Database/sql-server-schema.md) — full ordered script for `RaftDb` (tables, views, all stored procedures). Run it top to bottom in SSMS/Azure Data Studio/`sqlcmd`.
 `RaftDb` is the shared SQL Server database used by the Raft backend. Other teams may have their own backends, but if they use the shared SQL Server, they must point to their own agreed contract and credentials.
 
-The `MySqlProvisioning` and `PostgresProvisioning` connection strings remain in the sample config as future extensibility points for other cells. They are not the primary runtime path of Raft today.
+The `MySqlProvisioning` and `PostgresProvisioning` connection strings are part of the backend contract for multi-engine provisioning. If the runtime driver or external cell is not available, the corresponding engine is reported as unavailable at the API level.
 
 `RaftDbContext`'s fluent configuration (`Database/RaftDbContext.cs`) documents the same shape in C#, but it is never used to generate or apply schema — only as the connection source for `ISqlStoredProcedureExecutor`.
 

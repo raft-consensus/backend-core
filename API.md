@@ -22,7 +22,7 @@ Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos ho
 
 **Autenticación:** `Authorization: Bearer <jwt>` en cada endpoint que no diga "Público". El JWT se obtiene del flujo de OAuth (sección 2) y expira en 60 minutos (`Jwt:ExpirationMinutes`).
 
-**CORS:** solo el origen configurado en `Frontend:BaseUrl` (`https://raft.andrescortes.dev`) puede llamar al API desde el navegador. Si el frontend corre en otro dominio (otro entorno, localhost, etc.), avisar para agregarlo — hoy es un único origen permitido, no una lista.
+**CORS:** el API acepta los orígenes configurados en `Frontend:Origins`; si esa lista viene vacía, usa `Frontend:BaseUrl` como fallback. En ambos casos, el backend normaliza el valor a origen puro (`scheme + host + port`) antes de aplicarlo.
 
 **Arquitectura por células:** este backend administra la célula de Raft. Hoy el flujo activo aprovisiona SQL Server. MySQL, PostgreSQL u otros motores quedan como extensibilidad futura para otras células y deben integrarse mediante contratos públicos, no mezclarse con el camino principal.
 
@@ -33,6 +33,8 @@ Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos ho
 | Global (por IP) | 120 req/min | Todo el API |
 | `auth` (por IP) | 10 req/min | `/api/auth/*` |
 | `credential-reveal` (por usuario) | 5 req/min | `GET /api/me/databases/{id}/password` |
+| `database-management` (por usuario) | 10 req/min | `POST /api/me/databases/{id}/pause`, `POST /api/me/databases/{id}/resume`, `DELETE /api/me/databases/{id}` |
+| `admin-ops` (por admin) | 30 req/min | `GET/POST/PUT/DELETE` de `/api/users`, `/api/database-instances`, `/api/access-credentials`, `/api/audit-events`, y `GET /api/users/{userId}/dashboard` |
 
 ---
 
@@ -57,7 +59,38 @@ Sin autenticación. Estadísticas globales para la página principal.
 }
 ```
 
-`serviceAvailability` está fijo en `100.0` hasta que se integre monitoreo real — no lo trates como un dato en vivo todavía.
+`serviceAvailability` se calcula en el backend como porcentaje de respuestas no-5xx observadas en una ventana móvil de 24 horas sobre el API. Si no hay muestras todavía, retorna `100.0` por convención.
+
+### `GET /api/engines`
+
+Sin autenticación. Devuelve el catálogo de motores/capacidades registrados en el backend. `supportedByThisCell` depende de si el servicio está realmente disponible en runtime.
+
+```json
+{
+  "success": true,
+  "message": "Engine catalog retrieved successfully.",
+  "data": [
+    {
+      "name": "SQL Server",
+      "supportedByThisCell": true,
+      "status": "Available",
+      "notes": "This cell provisions and manages SQL Server databases."
+    },
+    {
+      "name": "MySQL",
+      "supportedByThisCell": true,
+      "status": "Available",
+      "notes": "This cell provisions and manages MySQL databases."
+    },
+    {
+      "name": "PostgreSQL",
+      "supportedByThisCell": false,
+      "status": "Unavailable",
+      "notes": "The backend has the contract wired, but the runtime PostgreSQL driver is not available yet."
+    }
+  ]
+}
+```
 
 ---
 
@@ -80,7 +113,7 @@ Redirige al proveedor (`302`), que al terminar redirige a `/api/auth/callback/{p
 Tras procesar el login, `GET /api/auth/callback/{provider}` **no devuelve JSON** — redirige (`302`) a:
 
 ```
-https://raft.andrescortes.dev/auth/callback#access_token=<jwt>&expires_at=<iso8601>&provider=<Google|GitHub>
+http://localhost:4200/auth/callback#access_token=<jwt>&expires_at=<iso8601>&provider=<Google|GitHub>
 ```
 
 El frontend tiene que tener una ruta montada en **`/auth/callback`** que, al cargar, lea `window.location.hash` (no query params — van después del `#`, a propósito, para que nunca se manden a ningún servidor ni queden en logs), extraiga `access_token`, y guarde la sesión.
@@ -110,7 +143,7 @@ if (error) {
 
 **El `user` (nombre, email, avatar, `role`, etc.) no viaja en la URL.** El JWT ya es un estándar (header.payload.signature) — decodificar la parte `payload` (base64) del lado del cliente da acceso a los claims (`sub`, `name`, `email`, `role`, `provider`) sin otra llamada. Si preferís no decodificar el JWT a mano, decime y agrego un endpoint `GET /api/me` que devuelva el usuario como JSON normal (ya autenticado con el Bearer token).
 
-**Qué hacer con el `access_token`:** guardarlo (localStorage/sessionStorage, a definir con el equipo) y mandarlo como `Authorization: Bearer <token>` en el resto de las llamadas — esas sí son `fetch` normales, con CORS habilitado para `https://raft.andrescortes.dev`.
+**Qué hacer con el `access_token`:** guardarlo (localStorage/sessionStorage, a definir con el equipo) y mandarlo como `Authorization: Bearer <token>` en el resto de las llamadas — esas sí son `fetch` normales, con CORS habilitado para el origin configurado en `Frontend:Origins` o `Frontend:BaseUrl`.
 
 ---
 
@@ -129,7 +162,7 @@ Devuelve las bases de datos del usuario autenticado (el id sale del JWT, nunca d
   "data": [
     {
       "databaseInstanceId": 5,
-      "host": "49.13.85.216",
+      "host": "localhost",
       "port": 3306,
       "databaseName": "raft_u1_a1b2c3d4",
       "databaseUser": "raft_u1_a1b2c3d4",
@@ -147,6 +180,22 @@ Devuelve las bases de datos del usuario autenticado (el id sale del JWT, nunca d
 `status` puede ser `Active`, `Suspended` (pausada por 7 días de inactividad o por exceder `maxSpaceBytes`) o, si ya no aparece en la lista, fue eliminada (30 días de inactividad).
 
 Si el usuario todavía no tiene ninguna BD, `data` viene como lista vacía — no es un error, es un estado real a manejar en la UI ("aún no tienes una base de datos").
+
+### `POST /api/me/databases`
+
+Crea una base del usuario autenticado. El request acepta `engine` y enruta a `SQL Server`, `MySQL` o `PostgreSQL` según el valor recibido. Alias aceptados: `sqlserver`, `mysql`, `postgres`, `postgresql`.
+
+### `POST /api/me/databases/{databaseInstanceId}/pause`
+
+Pausa una base propia del usuario autenticado. Si la base no le pertenece, responde `404`.
+
+### `POST /api/me/databases/{databaseInstanceId}/resume`
+
+Reanuda una base propia del usuario autenticado. Si la base no le pertenece, responde `404`.
+
+### `DELETE /api/me/databases/{databaseInstanceId}`
+
+Elimina una base propia del usuario autenticado. La eliminación real sigue pasando por el flujo de provisioning/lifecycle del backend, pero la acción puede iniciarla el usuario sobre su propio recurso.
 
 ### `GET /api/me/databases/{databaseInstanceId}/password`
 
@@ -245,7 +294,9 @@ Mismo shape que los objetos de `GET /api/me/databases` (sección 3) más `userId
 }
 ```
 
-`eventType` conocidos hoy: `Login`, `Provisioning`, `ProvisioningFailed`, `CredentialRevealed`.
+`eventType` conocidos hoy: `Login`, `Provisioning`, `ProvisioningFailed`, `CredentialRevealed`, `DatabasePaused`, `DatabaseResumed`, `DatabaseDeleted`, `DatabasePausedForInactivity`, `DatabaseDeletedForInactivity`, `DatabasePausedForQuota`, `DatabasePausedForConnections`, `AdminUserCreated`, `AdminUserUpdated`, `AdminUserDeleted`, `AdminDatabaseInstanceCreated`, `AdminDatabaseInstanceUpdated`, `AdminDatabaseInstanceDeleted`, `AdminAccessCredentialCreated`, `AdminAccessCredentialUpdated`, `AdminAccessCredentialDeleted`, `AdminAuditEventCreated`, `AdminAuditEventUpdated`, `AdminAuditEventDeleted`.
+
+Los endpoints administrativos de `Users`, `DatabaseInstances`, `AccessCredentials`, `AuditEvents` y `UserDashboard` también quedan auditados en backend cuando hacen create/update/delete, con eventos tipo `AdminUserCreated`, `AdminDatabaseInstanceUpdated`, `AdminAccessCredentialDeleted`, etc.
 
 ### User Dashboard (admin) — `GET /api/users/{userId}/dashboard`
 

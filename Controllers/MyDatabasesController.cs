@@ -24,23 +24,20 @@ public class MyDatabasesController : ControllerBase
     private readonly IUserDashboardService _dashboardService;
     private readonly IAccessCredentialService _accessCredentialService;
     private readonly IAuditEventService _auditEventService;
-    private readonly ISqlServerProvisioningService _provisioningService;
-    private readonly SqlServerProvisioningOptions _provisioningOptions;
+    private readonly IDatabaseProvisioningServiceResolver _provisioningResolver;
     private readonly ILogger<MyDatabasesController> _logger;
 
     public MyDatabasesController(
         IUserDashboardService dashboardService,
         IAccessCredentialService accessCredentialService,
         IAuditEventService auditEventService,
-        ISqlServerProvisioningService provisioningService,
-        IOptions<SqlServerProvisioningOptions> provisioningOptions,
+        IDatabaseProvisioningServiceResolver provisioningResolver,
         ILogger<MyDatabasesController> logger)
     {
         _dashboardService = dashboardService;
         _accessCredentialService = accessCredentialService;
         _auditEventService = auditEventService;
-        _provisioningService = provisioningService;
-        _provisioningOptions = provisioningOptions.Value;
+        _provisioningResolver = provisioningResolver;
         _logger = logger;
     }
 
@@ -60,48 +57,64 @@ public class MyDatabasesController : ControllerBase
 
     [HttpPost]
     [EnableRateLimiting("database-provisioning")]
-    public async Task<ActionResult<ServiceResponse<SqlServerProvisioningResultDto>>> CreateDatabase(
+    public async Task<ActionResult<ServiceResponse<DatabaseProvisioningResultDto>>> CreateDatabase(
         DatabaseProvisioningRequestDto request,
         CancellationToken cancellationToken)
     {
         var userId = GetUserId();
+        var engine = string.IsNullOrWhiteSpace(request.Engine) ? "SQL Server" : request.Engine.Trim();
 
-        if (!string.Equals(request.Engine?.Trim(), "SQL Server", StringComparison.OrdinalIgnoreCase))
+        IDatabaseProvisioningService provisioningService;
+        try
         {
-            return BadRequest(new ServiceResponse<SqlServerProvisioningResultDto>
+            provisioningService = _provisioningResolver.Resolve(engine);
+        }
+        catch
+        {
+            return StatusCode(StatusCodes.Status501NotImplemented, new ServiceResponse<DatabaseProvisioningResultDto>
             {
                 Success = false,
-                Message = "The requested engine is offered by another team and is not yet integrated."
+                Message = "The requested engine is not implemented by this backend."
+            });
+        }
+
+        if (!provisioningService.IsAvailable)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ServiceResponse<DatabaseProvisioningResultDto>
+            {
+                Success = false,
+                Message = $"The requested engine '{provisioningService.Engine}' is not currently available."
             });
         }
 
         var existing = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
-        if (existing.Count >= _provisioningOptions.MaxDatabasesPerUser)
+        var existingForEngine = existing.Count(database => string.Equals(database.Engine, provisioningService.Engine, StringComparison.OrdinalIgnoreCase));
+        if (existingForEngine >= provisioningService.MaxDatabasesPerUser)
         {
-            return Conflict(new ServiceResponse<SqlServerProvisioningResultDto>
+            return Conflict(new ServiceResponse<DatabaseProvisioningResultDto>
             {
                 Success = false,
-                Message = $"You already have {existing.Count} database(s). The maximum allowed per account is {_provisioningOptions.MaxDatabasesPerUser}."
+                Message = $"You already have {existingForEngine} {provisioningService.Engine} database(s). The maximum allowed per account for {provisioningService.Engine} is {provisioningService.MaxDatabasesPerUser}."
             });
         }
 
-        SqlServerProvisioningResultDto result;
+        DatabaseProvisioningResultDto result;
         try
         {
-            result = await _provisioningService.ProvisionDatabaseAsync(userId, cancellationToken);
+            result = await provisioningService.ProvisionDatabaseAsync(userId, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Self-service SQL Server database provisioning failed for user {UserId}", userId);
+            _logger.LogError(ex, "Self-service database provisioning failed for user {UserId} and engine {Engine}", userId, provisioningService.Engine);
 
             await _auditEventService.CreateAsync(new AuditEventCreateDto
             {
                 UserId = userId,
                 EventType = "ProvisioningFailed",
-                Description = $"Self-service SQL Server database provisioning failed: {ex.Message}"
+                Description = $"Self-service {provisioningService.Engine} database provisioning failed: {ex.Message}"
             }, cancellationToken);
 
-            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<SqlServerProvisioningResultDto>
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<DatabaseProvisioningResultDto>
             {
                 Success = false,
                 Message = $"The database could not be provisioned: {ex.Message}"
@@ -110,11 +123,140 @@ public class MyDatabasesController : ControllerBase
 
         // The password is only ever returned here, in plaintext, at creation time — it is
         // encrypted at rest afterward and can only be retrieved again via RevealPassword.
-        return CreatedAtAction(nameof(GetMyDatabases), null, new ServiceResponse<SqlServerProvisioningResultDto>
+        return CreatedAtAction(nameof(GetMyDatabases), null, new ServiceResponse<DatabaseProvisioningResultDto>
         {
             Success = true,
             Message = "Database provisioned successfully. Save the password now — it will not be shown in full again.",
             Data = result
+        });
+    }
+
+    [HttpPost("{databaseInstanceId:int}/pause")]
+    [EnableRateLimiting("database-management")]
+    public async Task<ActionResult<ServiceResponse<bool>>> PauseDatabase(int databaseInstanceId, CancellationToken cancellationToken)
+    {
+        var ownedDatabase = await GetOwnedDatabaseAsync(databaseInstanceId, cancellationToken);
+        if (ownedDatabase is null)
+        {
+            return NotFound(new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "Database instance not found or you do not have access to it."
+            });
+        }
+
+        try
+        {
+            await _provisioningResolver.Resolve(ownedDatabase.Engine).PauseAsync(databaseInstanceId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to pause database instance {DatabaseInstanceId} for user {UserId}", databaseInstanceId, GetUserId());
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "The database could not be paused."
+            });
+        }
+
+        await _auditEventService.CreateAsync(new AuditEventCreateDto
+        {
+            UserId = GetUserId(),
+            EventType = "DatabasePaused",
+            Description = $"User paused database instance {databaseInstanceId}."
+        }, cancellationToken);
+
+        return Ok(new ServiceResponse<bool>
+        {
+            Success = true,
+            Message = "Database paused successfully.",
+            Data = true
+        });
+    }
+
+    [HttpPost("{databaseInstanceId:int}/resume")]
+    [EnableRateLimiting("database-management")]
+    public async Task<ActionResult<ServiceResponse<bool>>> ResumeDatabase(int databaseInstanceId, CancellationToken cancellationToken)
+    {
+        var ownedDatabase = await GetOwnedDatabaseAsync(databaseInstanceId, cancellationToken);
+        if (ownedDatabase is null)
+        {
+            return NotFound(new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "Database instance not found or you do not have access to it."
+            });
+        }
+
+        try
+        {
+            await _provisioningResolver.Resolve(ownedDatabase.Engine).ResumeAsync(databaseInstanceId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to resume database instance {DatabaseInstanceId} for user {UserId}", databaseInstanceId, GetUserId());
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "The database could not be resumed."
+            });
+        }
+
+        await _auditEventService.CreateAsync(new AuditEventCreateDto
+        {
+            UserId = GetUserId(),
+            EventType = "DatabaseResumed",
+            Description = $"User resumed database instance {databaseInstanceId}."
+        }, cancellationToken);
+
+        return Ok(new ServiceResponse<bool>
+        {
+            Success = true,
+            Message = "Database resumed successfully.",
+            Data = true
+        });
+    }
+
+    [HttpDelete("{databaseInstanceId:int}")]
+    [EnableRateLimiting("database-management")]
+    public async Task<ActionResult<ServiceResponse<bool>>> DeleteDatabase(int databaseInstanceId, CancellationToken cancellationToken)
+    {
+        var ownedDatabase = await GetOwnedDatabaseAsync(databaseInstanceId, cancellationToken);
+        if (ownedDatabase is null)
+        {
+            return NotFound(new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "Database instance not found or you do not have access to it."
+            });
+        }
+
+        try
+        {
+            await _provisioningResolver.Resolve(ownedDatabase.Engine).DeleteAsync(databaseInstanceId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to delete database instance {DatabaseInstanceId} for user {UserId}", databaseInstanceId, GetUserId());
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<bool>
+            {
+                Success = false,
+                Message = "The database could not be deleted."
+            });
+        }
+
+        await _auditEventService.CreateAsync(new AuditEventCreateDto
+        {
+            UserId = GetUserId(),
+            EventType = "DatabaseDeleted",
+            Description = $"User deleted database instance {databaseInstanceId}."
+        }, cancellationToken);
+
+        return Ok(new ServiceResponse<bool>
+        {
+            Success = true,
+            Message = "Database deleted successfully.",
+            Data = true
         });
     }
 
@@ -155,5 +297,12 @@ public class MyDatabasesController : ControllerBase
             ?? throw new InvalidOperationException("Authenticated principal is missing a user id claim.");
 
         return int.Parse(value);
+    }
+
+    private async Task<UserDashboardDto?> GetOwnedDatabaseAsync(int databaseInstanceId, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var databases = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
+        return databases.FirstOrDefault(database => database.DatabaseInstanceId == databaseInstanceId);
     }
 }

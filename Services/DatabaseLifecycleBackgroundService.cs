@@ -1,15 +1,15 @@
-using System.Data.Common;
 using Microsoft.Extensions.Options;
 using raft_backend.Configuration;
 using raft_backend.Database;
+using raft_backend.DTOs;
 using raft_backend.Interfaces;
 
 namespace raft_backend.Services;
 
-// Runs on a timer instead of a SQL Server Agent job so it works regardless of SQL Server
-// edition (Express has no Agent). The *decision* of who's due for pause/delete/over-quota is
-// entirely SQL-side (see Database/sql-server-schema.md, section 8) — this class only asks
-// "who" and executes the already-decided, mechanical SQL Server actions.
+// Runs on a timer instead of a SQL Server Agent job so it works regardless of engine.
+// The business decision of who is due for pause/delete still lives in SQL-side metadata
+// (the Raft catalog); this class only asks "who" and executes engine-specific mechanical
+// actions through the resolved provisioning service.
 public class DatabaseLifecycleBackgroundService : BackgroundService
 {
     private const string ProvisioningAccount = "raft_provisioner";
@@ -47,53 +47,21 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
 
     private async Task RunTickAsync(CancellationToken cancellationToken)
     {
-        // BackgroundService is a singleton; the scoped EF contexts and everything built on
-        // top of them need a fresh DI scope per tick.
         using var scope = _scopeFactory.CreateScope();
-        var sqlServerExecutor = scope.ServiceProvider.GetRequiredService<ISqlServerCommandExecutor>();
         var sqlExecutor = scope.ServiceProvider.GetRequiredService<ISqlStoredProcedureExecutor>();
         var databaseInstanceService = scope.ServiceProvider.GetRequiredService<IDatabaseInstanceService>();
-        var provisioningService = scope.ServiceProvider.GetRequiredService<ISqlServerProvisioningService>();
+        var auditEventService = scope.ServiceProvider.GetRequiredService<IAuditEventService>();
+        var resolver = scope.ServiceProvider.GetRequiredService<IDatabaseProvisioningServiceResolver>();
 
-        await TouchActiveConnectionsAsync(sqlServerExecutor, sqlExecutor, cancellationToken);
-        await PauseInactiveAsync(sqlExecutor, provisioningService, cancellationToken);
-        await DeleteExpiredAsync(sqlExecutor, provisioningService, cancellationToken);
-        await RecalculateStorageAsync(sqlExecutor, databaseInstanceService, provisioningService, cancellationToken);
-    }
-
-    // Coarse, poll-based activity measurement: granularity equals the tick interval. Good
-    // enough for a 7/30-day TTL window; a precise events_statements_summary approach is a
-    // future improvement, not required here.
-    private async Task TouchActiveConnectionsAsync(
-        ISqlServerCommandExecutor sqlServerExecutor,
-        ISqlStoredProcedureExecutor sqlExecutor,
-        CancellationToken cancellationToken)
-    {
-        var activeDatabases = await sqlServerExecutor.QueryAsync(
-            """
-            SELECT DISTINCT DB_NAME(database_id)
-            FROM sys.dm_exec_sessions
-            WHERE login_name IS NOT NULL
-              AND login_name <> @ProvisioningAccount
-              AND database_id > 4
-              AND DB_NAME(database_id) LIKE 'raft\_u%' ESCAPE '\'
-            """,
-            command => command.AddParameter("@ProvisioningAccount", ProvisioningAccount),
-            reader => reader.GetString(0),
-            cancellationToken);
-
-        foreach (var databaseName in activeDatabases)
-        {
-            await sqlExecutor.ExecuteAsync(
-                StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseName,
-                command => command.AddParameter("@DatabaseName", databaseName),
-                cancellationToken);
-        }
+        await PauseInactiveAsync(sqlExecutor, resolver, auditEventService, cancellationToken);
+        await DeleteExpiredAsync(sqlExecutor, resolver, auditEventService, cancellationToken);
+        await RecalculateStorageAsync(sqlExecutor, databaseInstanceService, resolver, auditEventService, cancellationToken);
     }
 
     private async Task PauseInactiveAsync(
         ISqlStoredProcedureExecutor sqlExecutor,
-        ISqlServerProvisioningService provisioningService,
+        IDatabaseProvisioningServiceResolver resolver,
+        IAuditEventService auditEventService,
         CancellationToken cancellationToken)
     {
         var dueForPause = await sqlExecutor.QueryAsync(
@@ -106,7 +74,20 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         {
             try
             {
-                await provisioningService.PauseAsync(id, cancellationToken);
+                var instance = await FindInstanceAsync(id, cancellationToken);
+                if (instance is null)
+                {
+                    continue;
+                }
+
+                await resolver.Resolve(instance.Engine).PauseAsync(id, cancellationToken);
+
+                await auditEventService.CreateAsync(new AuditEventCreateDto
+                {
+                    UserId = null,
+                    EventType = "DatabasePausedForInactivity",
+                    Description = $"Database instance {id} was paused automatically for inactivity."
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -117,7 +98,8 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
 
     private async Task DeleteExpiredAsync(
         ISqlStoredProcedureExecutor sqlExecutor,
-        ISqlServerProvisioningService provisioningService,
+        IDatabaseProvisioningServiceResolver resolver,
+        IAuditEventService auditEventService,
         CancellationToken cancellationToken)
     {
         var dueForDelete = await sqlExecutor.QueryAsync(
@@ -130,7 +112,20 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         {
             try
             {
-                await provisioningService.DeleteAsync(id, cancellationToken);
+                var instance = await FindInstanceAsync(id, cancellationToken);
+                if (instance is null)
+                {
+                    continue;
+                }
+
+                await resolver.Resolve(instance.Engine).DeleteAsync(id, cancellationToken);
+
+                await auditEventService.CreateAsync(new AuditEventCreateDto
+                {
+                    UserId = null,
+                    EventType = "DatabaseDeletedForInactivity",
+                    Description = $"Database instance {id} was deleted automatically after inactivity TTL."
+                }, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -139,25 +134,25 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         }
     }
 
-    // Reactive, periodic quota enforcement — the honest answer given students write directly
-    // to their databases from their own apps. There is no native way to block a write in real
-    // time without this backend proxying all student SQL traffic, which is out of scope.
     private async Task RecalculateStorageAsync(
         ISqlStoredProcedureExecutor sqlExecutor,
         IDatabaseInstanceService databaseInstanceService,
-        ISqlServerProvisioningService provisioningService,
+        IDatabaseProvisioningServiceResolver resolver,
+        IAuditEventService auditEventService,
         CancellationToken cancellationToken)
     {
         var instances = await databaseInstanceService.GetAllAsync(cancellationToken);
 
         foreach (var instance in instances)
         {
-            if (instance.Status is not ("Active" or "Suspended"))
+            var service = ResolveService(instance.Engine, resolver);
+            if (service is null || !service.IsAvailable)
             {
                 continue;
             }
 
-            var usedBytes = 0L;
+            var usedBytes = await service.GetUsedSpaceBytesAsync(instance.DatabaseName, cancellationToken);
+            var activeConnections = await service.GetActiveConnectionCountAsync(instance.DatabaseName, cancellationToken);
 
             await sqlExecutor.ExecuteAsync(
                 StoredProcedureNames.DatabaseInstances_UpdateUsedSpace,
@@ -168,17 +163,72 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
                 },
                 cancellationToken);
 
-            if (instance.Status == "Active" && usedBytes > instance.MaxSpaceBytes)
+            if (activeConnections > 0)
+            {
+                await sqlExecutor.ExecuteAsync(
+                    StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseName,
+                    command => command.AddParameter("@DatabaseName", instance.DatabaseName),
+                    cancellationToken);
+            }
+
+            if (instance.Status != "Active")
+            {
+                continue;
+            }
+
+            if (usedBytes > instance.MaxSpaceBytes)
             {
                 try
                 {
-                    await provisioningService.PauseAsync(instance.Id, cancellationToken);
+                    await service.PauseAsync(instance.Id, cancellationToken);
+                    await auditEventService.CreateAsync(new AuditEventCreateDto
+                    {
+                        UserId = instance.UserId,
+                        EventType = "DatabasePausedForQuota",
+                        Description = $"Database instance {instance.Id} was paused automatically because it exceeded its storage quota."
+                    }, cancellationToken);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to lock over-quota database instance {Id}", instance.Id);
                 }
             }
+            else if (activeConnections > _options.MaxConcurrentConnectionsPerDatabase)
+            {
+                try
+                {
+                    await service.PauseAsync(instance.Id, cancellationToken);
+                    await auditEventService.CreateAsync(new AuditEventCreateDto
+                    {
+                        UserId = instance.UserId,
+                        EventType = "DatabasePausedForConnections",
+                        Description = $"Database instance {instance.Id} was paused automatically because it exceeded the concurrent connection limit."
+                    }, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to lock database instance {Id} for excessive concurrent connections", instance.Id);
+                }
+            }
         }
+    }
+
+    private static IDatabaseProvisioningService? ResolveService(string engine, IDatabaseProvisioningServiceResolver resolver)
+    {
+        try
+        {
+            return resolver.Resolve(engine);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<DatabaseInstanceReadDto?> FindInstanceAsync(int id, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var databaseInstanceService = scope.ServiceProvider.GetRequiredService<IDatabaseInstanceService>();
+        return await databaseInstanceService.GetByIdAsync(id, cancellationToken);
     }
 }

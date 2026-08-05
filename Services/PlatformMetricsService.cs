@@ -7,10 +7,12 @@ namespace raft_backend.Services;
 public class PlatformMetricsService : IPlatformMetricsService
 {
     private readonly ISqlStoredProcedureExecutor _executor;
+    private readonly IApiAvailabilityTracker _availabilityTracker;
 
-    public PlatformMetricsService(ISqlStoredProcedureExecutor executor)
+    public PlatformMetricsService(ISqlStoredProcedureExecutor executor, IApiAvailabilityTracker availabilityTracker)
     {
         _executor = executor;
+        _availabilityTracker = availabilityTracker;
     }
 
     public Task<PlatformMetricsDto> GetPlatformMetricsAsync(CancellationToken cancellationToken = default)
@@ -22,7 +24,7 @@ public class PlatformMetricsService : IPlatformMetricsService
             cancellationToken).ContinueWith(static task => task.Result ?? new PlatformMetricsDto(), cancellationToken);
     }
 
-    private static PlatformMetricsDto Map(DbDataReader reader)
+    private PlatformMetricsDto Map(DbDataReader reader)
     {
         return new PlatformMetricsDto
         {
@@ -31,7 +33,7 @@ public class PlatformMetricsService : IPlatformMetricsService
             ActiveDatabases = reader.GetInt32Value("ActiveDatabases"),
             TotalLogins = reader.GetInt32Value("TotalLogins"),
             ActiveUsers = reader.GetInt32Value("ActiveUsers"),
-            ServiceAvailability = reader.GetDecimalValue("ServiceAvailability")
+            ServiceAvailability = _availabilityTracker.GetAvailabilityPercent()
         };
     }
 }

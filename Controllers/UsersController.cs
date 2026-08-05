@@ -1,5 +1,8 @@
+using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using raft_backend.DTOs;
 using raft_backend.Response;
 using raft_backend.Services;
@@ -8,14 +11,17 @@ namespace raft_backend.Controllers;
 
 [ApiController]
 [Authorize(Policy = "AdminOnly")]
+[EnableRateLimiting("admin-ops")]
 [Route("api/users")]
 public class UsersController : ControllerBase
 {
     private readonly IUserService _service;
+    private readonly IAuditEventService _auditEventService;
 
-    public UsersController(IUserService service)
+    public UsersController(IUserService service, IAuditEventService auditEventService)
     {
         _service = service;
+        _auditEventService = auditEventService;
     }
 
     [HttpGet]
@@ -64,6 +70,12 @@ public class UsersController : ControllerBase
             });
         }
 
+        await RecordAuditAsync(
+            "AdminUserCreated",
+            $"Admin created user {user.Id}.",
+            new { targetUserId = user.Id },
+            cancellationToken);
+
         return CreatedAtAction(nameof(GetById), new { id = user.Id }, new ServiceResponse<UserReadDto>
         {
             Success = true,
@@ -84,6 +96,12 @@ public class UsersController : ControllerBase
                 Message = "User not found or could not be updated."
             });
         }
+
+        await RecordAuditAsync(
+            "AdminUserUpdated",
+            $"Admin updated user {id}.",
+            new { targetUserId = id },
+            cancellationToken);
 
         return Ok(new ServiceResponse<UserReadDto>
         {
@@ -106,11 +124,37 @@ public class UsersController : ControllerBase
             });
         }
 
+        await RecordAuditAsync(
+            "AdminUserDeleted",
+            $"Admin deleted user {id}.",
+            new { targetUserId = id },
+            cancellationToken);
+
         return Ok(new ServiceResponse<bool>
         {
             Success = true,
             Message = "User deleted successfully.",
             Data = true
         });
+    }
+
+    private Task RecordAuditAsync(string eventType, string description, object? additionalData, CancellationToken cancellationToken)
+    {
+        return _auditEventService.CreateAsync(new AuditEventCreateDto
+        {
+            UserId = GetActorUserId(),
+            EventType = eventType,
+            Description = description,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            AdditionalData = additionalData is null ? null : JsonSerializer.Serialize(additionalData)
+        }, cancellationToken);
+    }
+
+    private int GetActorUserId()
+    {
+        var value = User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? throw new InvalidOperationException("Authenticated principal is missing a user id claim.");
+
+        return int.Parse(value);
     }
 }

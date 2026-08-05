@@ -46,7 +46,22 @@ Normalmente:
 - el backend de su equipo ejecuta la operación contra SQL Server;
 - el usuario recibe su base o sus credenciales desde la aplicación.
 
-## 3. Esquema de aislamiento entre equipos
+## 3. Flujo actual y extensibilidad futura
+
+Flujo actual de Raft:
+
+- el core operativo vive en SQL Server compartido;
+- el backend de Raft crea, consulta y administra bases SQL Server;
+- el aprovisionamiento ocurre de forma explícita y no durante login ni registro;
+- los usuarios finales trabajan sobre sus propias bases asignadas.
+
+Extensibilidad futura:
+
+- otras células pueden exponer MySQL, PostgreSQL u otros motores;
+- Raft puede coordinar solicitudes hacia esas células cuando el producto lo requiera;
+- la misma regla de aislamiento aplica: cada usuario solo ve sus propias bases.
+
+## 4. Esquema de aislamiento entre equipos
 
 La separación correcta entre equipos se hace con:
 
@@ -63,7 +78,7 @@ La regla es simple:
 - el equipo B no debe poder ver ni modificar la base del equipo A;
 - si una base pertenece a un cliente o usuario final, solo el backend autorizado debe poder acceder a ella.
 
-## 4. Flujo general de conexión
+## 5. Flujo general de conexión
 
 Cada backend de equipo se conecta al SQL Server compartido con su propia cadena de conexión.
 
@@ -89,7 +104,7 @@ Lo que no debería cambiar si comparten el mismo core:
 - la forma de llamar a los stored procedures;
 - el contrato funcional.
 
-## 5. Logins recomendados
+## 6. Logins recomendados
 
 ### Login por equipo
 
@@ -124,7 +139,7 @@ Si alguna herramienta necesita solo lectura:
 
 Debe tener únicamente permisos de lectura sobre vistas o consultas autorizadas.
 
-## 6. Permisos mínimos
+## 7. Permisos mínimos
 
 ### Para un backend normal
 
@@ -161,7 +176,7 @@ La regla práctica es:
 - no habilitar trust cruzado;
 - no permitir cadenas de propiedad entre bases salvo necesidad estricta.
 
-## 7. Cómo se aísla una base del equipo A frente al equipo B
+## 8. Cómo se aísla una base del equipo A frente al equipo B
 
 Supongamos:
 
@@ -176,7 +191,7 @@ En `RaftTeamB_DB` no debe existir usuario mapeado al login del equipo A.
 
 Si eso se cumple, el equipo B no puede ver ni modificar la base del equipo A por la vía normal de autenticación/autorización.
 
-## 8. Qué pasa con los stored procedures
+## 9. Qué pasa con los stored procedures
 
 Hay dos familias de SP:
 
@@ -203,7 +218,7 @@ Estos pertenecen a la base de un usuario o de una aplicación concreta.
 
 No hay que mezclar ambas cosas.
 
-## 9. Provisión de una nueva base
+## 10. Provisión de una nueva base
 
 El flujo recomendado es:
 
@@ -219,7 +234,7 @@ El flujo recomendado es:
 Este flujo no debe ocurrir durante login ni registro.
 Debe ser una acción explícita de autoservicio.
 
-## 10. Eliminación y lifecycle
+## 11. Eliminación y lifecycle
 
 La eliminación no debería quedar abierta al backend de cada equipo sin control.
 
@@ -232,7 +247,7 @@ Recomendación:
 
 Así se evita que un equipo borre recursos que no le pertenecen.
 
-## 11. Reglas de seguridad mínimas
+## 12. Reglas de seguridad mínimas
 
 - `TRUSTWORTHY` en OFF;
 - `cross db ownership chaining` en OFF;
@@ -245,7 +260,54 @@ Así se evita que un equipo borre recursos que no le pertenecen.
 - con contraseñas fuertes y rotables;
 - con HTTPS para toda comunicación externa.
 
-## 12. Resumen corto
+## 12.1. Identidad del usuario final y aislamiento entre sus bases
+
+Si un usuario final usa la misma identidad para acceder a varias bases propias, esa identidad solo debe existir dentro de las bases que le pertenecen.
+
+La regla es esta:
+
+- el login o usuario final puede reutilizarse en todas las bases del mismo dueño;
+- ese mismo login no debe existir en bases de otros usuarios;
+- si el login no existe dentro de una base, no puede entrar a ella;
+- el backend o el proceso de provisioning debe crear el usuario solo en las bases autorizadas;
+- las bases ajenas no deben tener usuarios ni permisos mapeados a esa identidad.
+
+Ejemplo práctico:
+
+- `raft_user_001` puede existir en `RaftUser001_Db` y en otras bases del mismo usuario;
+- `raft_user_001` no debe existir en `RaftUser002_Db`;
+- por eso el usuario 001 no puede ver ni modificar la base del usuario 002 por la vía normal de autenticación/autorización.
+
+Este patrón permite que un usuario tenga una sola identidad de acceso sin perder aislamiento entre sus bases y las bases de otros usuarios.
+
+## 12.2. Caso de otras células: MySQL, PostgreSQL u otros motores
+
+Cuando un usuario de Raft crea una base en otro motor administrado por otra célula, el principio es el mismo: la identidad del usuario solo debe existir dentro de las bases que le pertenecen.
+
+Flujo esperado:
+
+1. El usuario pide crear una base MySQL, PostgreSQL u otra soportada por una célula externa.
+2. Raft recibe la solicitud y la envía al backend de la célula responsable de ese motor.
+3. Ese backend crea la base y el usuario/credencial correspondiente si aplica.
+4. La identidad creada solo queda asociada a las bases de ese mismo usuario.
+5. Esa identidad no debe existir en las bases de otros usuarios.
+
+Regla de aislamiento:
+
+- un usuario de Raft puede tener acceso a sus bases MySQL/PostgreSQL propias;
+- el mismo usuario no debe aparecer en las bases de otros clientes;
+- la célula que administra ese motor es la que materializa los permisos;
+- Raft solo coordina, registra y expone el resultado al usuario final.
+
+Ejemplo:
+
+- `mysql_user_001` puede existir en `mysql_db_001_a` y `mysql_db_001_b`;
+- `mysql_user_001` no debe existir en `mysql_db_002_a`;
+- por eso el usuario 001 no puede ver ni modificar las bases del usuario 002.
+
+Este mismo criterio aplica para PostgreSQL u otros motores que se integren más adelante.
+
+## 13. Resumen corto
 
 Lo que necesitas para que esto funcione es:
 
@@ -259,7 +321,7 @@ Lo que necesitas para que esto funcione es:
 
 Ese es el modelo correcto para que el equipo A no vea ni modifique la base del equipo B.
 
-## 13. Qué deben otorgarnos los equipos de otras células
+## 14. Qué deben otorgarnos los equipos de otras células
 
 Si otros equipos van a usar la VPS compartida o si Raft va a crearles usuarios y bases dentro del SQL Server compartido, ellos deben darnos explícitamente los datos y permisos mínimos para operar.
 

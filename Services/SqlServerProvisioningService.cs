@@ -23,6 +23,12 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
     private readonly SqlServerProvisioningOptions _options;
     private readonly ILogger<SqlServerProvisioningService> _logger;
 
+    public string Engine => "SQL Server";
+
+    public bool IsAvailable => true;
+
+    public int MaxDatabasesPerUser => _options.MaxDatabasesPerUser;
+
     public SqlServerProvisioningService(
         ISqlServerCommandExecutor sqlServerExecutor,
         ISqlStoredProcedureExecutor sqlExecutor,
@@ -45,7 +51,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         _logger = logger;
     }
 
-    public async Task<SqlServerProvisioningResultDto> ProvisionDatabaseAsync(int userId, CancellationToken cancellationToken = default)
+    public async Task<DatabaseProvisioningResultDto> ProvisionDatabaseAsync(int userId, CancellationToken cancellationToken = default)
     {
         var sharedState = await GetSharedProvisioningStateAsync(userId, cancellationToken);
         var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
@@ -141,6 +147,9 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             return;
         }
 
+        ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
+        await DisconnectDatabaseSessionsAsync(instance.DatabaseName, cancellationToken);
+        await SetDatabaseReadOnlyAsync(instance.DatabaseName, cancellationToken);
         await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
     }
@@ -157,6 +166,8 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             return;
         }
 
+        ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
+        await SetDatabaseReadWriteAsync(instance.DatabaseName, cancellationToken);
         await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: true, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
     }
@@ -302,11 +313,107 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         bool allowConnect,
         CancellationToken cancellationToken)
     {
+        ValidateDatabaseIdentifiers(databaseName, loginName);
+
         var commandText = allowConnect
             ? $"USE [{databaseName}]; REVOKE CONNECT FROM [{loginName}];"
             : $"USE [{databaseName}]; DENY CONNECT TO [{loginName}];";
 
         await _sqlServerExecutor.ExecuteNonQueryAsync(commandText, null, cancellationToken);
+    }
+
+    public async Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
+    {
+        ValidateDatabaseIdentifiers(databaseName);
+
+        var results = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT CAST(COALESCE(SUM(CAST(size AS BIGINT)), 0) * 8192 AS BIGINT) AS UsedBytes
+            FROM sys.master_files
+            WHERE database_id = DB_ID(@DatabaseName)
+            """,
+            command => command.AddParameter("@DatabaseName", databaseName),
+            reader => reader.GetInt64Value("UsedBytes"),
+            cancellationToken);
+
+        return results.SingleOrDefault();
+    }
+
+    public async Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
+    {
+        ValidateDatabaseIdentifiers(databaseName);
+
+        var results = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT COUNT_BIG(1) AS ActiveConnections
+            FROM sys.dm_exec_sessions
+            WHERE database_id = DB_ID(@DatabaseName)
+              AND is_user_process = 1
+              AND login_name IS NOT NULL
+              AND login_name <> @ProvisioningAccount
+            """,
+            command =>
+            {
+                command.AddParameter("@DatabaseName", databaseName);
+                command.AddParameter("@ProvisioningAccount", "raft_provisioner");
+            },
+            reader => reader.GetInt64Value("ActiveConnections"),
+            cancellationToken);
+
+        var count = results.SingleOrDefault();
+        return count > int.MaxValue ? int.MaxValue : (int)count;
+    }
+
+    private async Task SetDatabaseReadOnlyAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        ValidateDatabaseIdentifiers(databaseName);
+
+        await _sqlServerExecutor.ExecuteNonQueryAsync(
+            $"""
+             IF DB_ID(N'{databaseName}') IS NOT NULL
+             BEGIN
+                 ALTER DATABASE [{databaseName}] SET READ_ONLY WITH ROLLBACK IMMEDIATE;
+             END
+             """,
+            null,
+            cancellationToken);
+    }
+
+    private async Task SetDatabaseReadWriteAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        ValidateDatabaseIdentifiers(databaseName);
+
+        await _sqlServerExecutor.ExecuteNonQueryAsync(
+            $"""
+             IF DB_ID(N'{databaseName}') IS NOT NULL
+             BEGIN
+                 ALTER DATABASE [{databaseName}] SET READ_WRITE;
+             END
+             """,
+            null,
+            cancellationToken);
+    }
+
+    private async Task DisconnectDatabaseSessionsAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        ValidateDatabaseIdentifiers(databaseName);
+
+        var sessionIds = await _sqlServerExecutor.QueryAsync(
+            """
+            SELECT session_id
+            FROM sys.dm_exec_sessions
+            WHERE database_id = DB_ID(@DatabaseName)
+              AND is_user_process = 1
+              AND session_id <> @@SPID
+            """,
+            command => command.AddParameter("@DatabaseName", databaseName),
+            reader => reader.GetInt32Value("session_id"),
+            cancellationToken);
+
+        foreach (var sessionId in sessionIds.Distinct())
+        {
+            await _sqlServerExecutor.ExecuteNonQueryAsync($"KILL {sessionId}", null, cancellationToken);
+        }
     }
 
     private async Task<bool> LoginExistsAsync(string loginName, CancellationToken cancellationToken)
@@ -375,6 +482,14 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         if (!IdentifierRegex().IsMatch(identifier))
         {
             throw new InvalidOperationException($"Generated SQL Server identifier '{identifier}' failed validation.");
+        }
+    }
+
+    private static void ValidateDatabaseIdentifiers(params string[] identifiers)
+    {
+        foreach (var identifier in identifiers)
+        {
+            ValidateIdentifier(identifier);
         }
     }
 
