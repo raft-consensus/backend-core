@@ -56,9 +56,22 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var sharedState = await GetSharedProvisioningStateAsync(userId, cancellationToken);
         var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
         var sharedLoginName = sharedState.SharedLoginName;
-        var password = sharedState.EncryptedPassword is null
-            ? _passwordGenerator.Generate(_options.PasswordLength)
-            : protector.Unprotect(sharedState.EncryptedPassword);
+        string password;
+        if (sharedState.EncryptedPassword is null)
+        {
+            password = _passwordGenerator.Generate(_options.PasswordLength);
+        }
+        else
+        {
+            try
+            {
+                password = protector.Unprotect(sharedState.EncryptedPassword);
+            }
+            catch (CryptographicException)
+            {
+                password = _passwordGenerator.Generate(_options.PasswordLength);
+            }
+        }
         for (var attempt = 1; attempt <= MaxProvisioningAttempts; attempt++)
         {
             var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
