@@ -1,5 +1,26 @@
-/obj
-/bin
+## .NET Build & Compilation Outputs
+[Bb]in/
+[Oo]bj/
+out/
+publish/
+
+## Visual Studio & IDEs
+.vs/
+.vscode/
 .idea/
-appsettings.json
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+
+## Keys & Local Secrets
 /keys
+appsettings.json
+appsettings.*.json
+.env
+.env.local
+
+## OS Generated Files
+[Tt]humbs.db
+.DS_Store

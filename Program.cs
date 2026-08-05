@@ -161,6 +161,11 @@ builder.Services.AddOptions<PostgresProvisioningOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<MongoProvisioningOptions>()
+    .Bind(builder.Configuration.GetSection("MongoProvisioning"))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.Configure<ExternalCellConnectionStrings>(builder.Configuration.GetSection("ConnectionStrings"));
 
 var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
@@ -304,6 +309,7 @@ builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningS
 builder.Services.AddScoped<IDatabaseProvisioningService, SqlServerProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningService, MySqlProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningService, PostgresProvisioningService>();
+builder.Services.AddScoped<IDatabaseProvisioningService, MongoProvisioningService>();
 builder.Services.AddScoped<IDatabaseProvisioningServiceResolver, DatabaseProvisioningServiceResolver>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
