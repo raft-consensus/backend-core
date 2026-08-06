@@ -128,10 +128,7 @@ public class MongoProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        await _databaseInstanceService.UpdateAsync(databaseInstanceId, new DatabaseInstanceUpdateDto
-        {
-            Status = "Paused"
-        }, cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Paused", cancellationToken);
     }
 
     public async Task ResumeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
@@ -139,10 +136,7 @@ public class MongoProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        await _databaseInstanceService.UpdateAsync(databaseInstanceId, new DatabaseInstanceUpdateDto
-        {
-            Status = "Active"
-        }, cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Active", cancellationToken);
     }
 
     public async Task DeleteAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
@@ -174,5 +168,29 @@ public class MongoProvisioningService : IDatabaseProvisioningService
     public Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
     {
         return Task.FromResult(0);
+    }
+
+    private async Task UpdateStatusAsync(
+        int databaseInstanceId,
+        DatabaseInstanceReadDto instance,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        await _databaseInstanceService.UpdateAsync(
+            databaseInstanceId,
+            new DatabaseInstanceUpdateDto
+            {
+                UserId = instance.UserId,
+                Host = instance.Host,
+                Port = instance.Port,
+                DatabaseName = instance.DatabaseName,
+                DatabaseUser = instance.DatabaseUser,
+                Engine = instance.Engine,
+                Status = status,
+                UsedSpaceBytes = instance.UsedSpaceBytes,
+                MaxSpaceBytes = instance.MaxSpaceBytes,
+                LastActivity = instance.LastActivity
+            },
+            cancellationToken);
     }
 }

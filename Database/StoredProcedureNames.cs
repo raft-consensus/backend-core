@@ -41,6 +41,16 @@ public static class StoredProcedureNames
     public const string AiApiKeys_Revoke = "usp_AiApiKeys_Revoke";
     public const string AiApiKeys_RecordUsage = "usp_AiApiKeys_RecordUsage";
 
+    public const string N8nAccounts_GetAllByUserId = "usp_N8nAccounts_GetAllByUserId";
+    public const string N8nAccounts_GetAll = "usp_N8nAccounts_GetAll";
+    public const string N8nAccounts_GetById = "usp_N8nAccounts_GetById";
+    public const string N8nAccounts_GetByExternalUserRef = "usp_N8nAccounts_GetByExternalUserRef";
+    public const string N8nAccounts_GetActiveByUserId = "usp_N8nAccounts_GetActiveByUserId";
+    public const string N8nAccounts_Create = "usp_N8nAccounts_Create";
+    public const string N8nAccounts_MarkProvisioned = "usp_N8nAccounts_MarkProvisioned";
+    public const string N8nAccounts_MarkFailed = "usp_N8nAccounts_MarkFailed";
+    public const string N8nAccounts_Revoke = "usp_N8nAccounts_Revoke";
+
     public const string PlatformMetrics_Get = "usp_PlatformMetrics_Get";
     public const string UserDashboard_GetByUserId = "usp_UserDashboard_GetByUserId";
 

@@ -1007,3 +1007,239 @@ BEGIN
       AND Revoked_at IS NULL;
 END
 ```
+
+---
+
+## 10. N8N — Cuentas aprovisionadas para usuarios
+
+### 10.1 Tabla
+
+```sql
+CREATE TABLE dbo.N8nAccounts (
+    Id INT IDENTITY(1,1) NOT NULL,
+    UserId INT NOT NULL,
+    ExternalUserRef NVARCHAR(64) NOT NULL,
+    Email NVARCHAR(320) NOT NULL,
+    AccountId NVARCHAR(128) NULL,
+    Status NVARCHAR(20) NOT NULL CONSTRAINT DF_N8nAccounts_Status DEFAULT ('Pending'),
+    Created_at DATETIME2 NOT NULL CONSTRAINT DF_N8nAccounts_Created_at DEFAULT (SYSUTCDATETIME()),
+    Updated_at DATETIME2 NULL,
+    Provisioned_at DATETIME2 NULL,
+    Revoked_at DATETIME2 NULL,
+    LastSyncedAt DATETIME2 NULL,
+    LastErrorMessage NVARCHAR(4000) NULL,
+    CONSTRAINT PK_N8nAccounts PRIMARY KEY (Id),
+    CONSTRAINT FK_N8nAccounts_Users_UserId FOREIGN KEY (UserId) REFERENCES dbo.Users (Id)
+);
+
+CREATE UNIQUE INDEX IX_N8nAccounts_ExternalUserRef ON dbo.N8nAccounts (ExternalUserRef);
+
+CREATE UNIQUE INDEX IX_N8nAccounts_UserId_Active
+ON dbo.N8nAccounts (UserId)
+WHERE Status IN ('Pending', 'Active');
+
+CREATE INDEX IX_N8nAccounts_UserId ON dbo.N8nAccounts (UserId);
+
+CREATE INDEX IX_N8nAccounts_Status ON dbo.N8nAccounts (Status);
+```
+
+### 10.2 Stored Procedures
+
+#### 10.2.1 `usp_N8nAccounts_GetAllByUserId`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAllByUserId
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
+           LastSyncedAt, LastErrorMessage
+    FROM dbo.N8nAccounts
+    WHERE UserId = @UserId
+    ORDER BY Id DESC;
+END
+```
+
+#### 10.2.2 `usp_N8nAccounts_GetAll`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAll
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
+           LastSyncedAt, LastErrorMessage
+    FROM dbo.N8nAccounts
+    ORDER BY Id DESC;
+END
+```
+
+#### 10.2.3 `usp_N8nAccounts_GetById`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetById
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
+           LastSyncedAt, LastErrorMessage
+    FROM dbo.N8nAccounts
+    WHERE Id = @Id;
+END
+```
+
+#### 10.2.4 `usp_N8nAccounts_GetByExternalUserRef`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetByExternalUserRef
+    @ExternalUserRef NVARCHAR(64)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
+           LastSyncedAt, LastErrorMessage
+    FROM dbo.N8nAccounts
+    WHERE ExternalUserRef = @ExternalUserRef;
+END
+```
+
+#### 10.2.5 `usp_N8nAccounts_GetActiveByUserId`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetActiveByUserId
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (1) Id, UserId, ExternalUserRef, Email, AccountId, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
+           LastSyncedAt, LastErrorMessage
+    FROM dbo.N8nAccounts
+    WHERE UserId = @UserId
+      AND Status IN ('Pending', 'Active')
+      AND Revoked_at IS NULL
+    ORDER BY Id DESC;
+END
+```
+
+#### 10.2.6 `usp_N8nAccounts_Create`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Create
+    @UserId INT,
+    @ExternalUserRef NVARCHAR(64),
+    @Email NVARCHAR(320),
+    @AccountId NVARCHAR(128) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (
+        SELECT 1
+        FROM dbo.N8nAccounts
+        WHERE ExternalUserRef = @ExternalUserRef
+           OR (UserId = @UserId AND Status IN ('Pending', 'Active') AND Revoked_at IS NULL)
+    )
+    BEGIN
+        RETURN;
+    END
+
+    INSERT INTO dbo.N8nAccounts
+        (UserId, ExternalUserRef, Email, AccountId, Status, Created_at)
+    VALUES
+        (@UserId, @ExternalUserRef, @Email, @AccountId, 'Pending', SYSUTCDATETIME());
+
+    DECLARE @NewId INT = SCOPE_IDENTITY();
+    EXEC dbo.usp_N8nAccounts_GetById @Id = @NewId;
+END
+```
+
+#### 10.2.7 `usp_N8nAccounts_MarkProvisioned`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkProvisioned
+    @Id INT,
+    @UserId INT,
+    @AccountId NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.N8nAccounts
+    SET AccountId = @AccountId,
+        Status = 'Active',
+        Provisioned_at = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME(),
+        LastSyncedAt = SYSUTCDATETIME(),
+        LastErrorMessage = NULL
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        RETURN;
+    END
+
+    EXEC dbo.usp_N8nAccounts_GetById @Id = @Id;
+END
+```
+
+#### 10.2.8 `usp_N8nAccounts_MarkFailed`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkFailed
+    @Id INT,
+    @UserId INT,
+    @LastErrorMessage NVARCHAR(4000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.N8nAccounts
+    SET Status = 'Failed',
+        Updated_at = SYSUTCDATETIME(),
+        LastSyncedAt = SYSUTCDATETIME(),
+        LastErrorMessage = @LastErrorMessage
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 10.2.9 `usp_N8nAccounts_Revoke`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Revoke
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.N8nAccounts
+    SET Status = 'Revoked',
+        Revoked_at = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME(),
+        LastSyncedAt = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+END
+```

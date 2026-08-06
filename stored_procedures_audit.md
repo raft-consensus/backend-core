@@ -2,7 +2,7 @@
 
 > **Fecha de Auditoría:** 2026-08-04  
 > **Servidor BD:** `49.13.85.216` (Base de Datos: `RaftDb`)  
-> **Backend Framework:** .NET 10 Web API (`raft-backend.csproj`)  
+> **Backend Framework:** .NET 10 Web API (`raft-backend.csproj`), organizado como monolito modular bajo `Modules/`  
 > **Total Procedimientos Analizados:** 35 SPs
 
 ---
