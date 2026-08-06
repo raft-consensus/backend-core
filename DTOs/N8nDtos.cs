@@ -22,10 +22,14 @@ public class N8nProvisioningResultDto
 {
     public bool Created { get; set; }
     public N8nAccountReadDto Account { get; set; } = new();
+    public string? AccessType { get; set; }
+    public string? Credential { get; set; }
 }
 
 public class N8nProvisioningResponseDto
 {
     public bool Created { get; set; }
     public N8nAccountReadDto Account { get; set; } = new();
+    public string? AccessType { get; set; }
+    public string? Credential { get; set; }
 }

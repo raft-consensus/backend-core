@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using raft_backend.Configuration;
 using System.Threading.RateLimiting;
@@ -75,10 +76,8 @@ public static class RaftPlatformModule
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        builder.Services.AddOptions<N8nProvisioningOptions>()
-            .Bind(builder.Configuration.GetSection("N8nProvisioning"))
-            .ValidateDataAnnotations()
-            .ValidateOnStart();
+        builder.Services.AddSingleton<IOptions<N8nProvisioningOptions>>(
+            Options.Create(ResolveN8nProvisioningOptions(builder)));
 
         builder.Services.AddOptions<MongoProvisioningOptions>()
             .Bind(builder.Configuration.GetSection("MongoProvisioning"))
@@ -96,6 +95,62 @@ public static class RaftPlatformModule
 
         var allowedOrigins = frontendOptions.GetAllowedOrigins();
         ValidateSecureRuntimeConfiguration(builder.Environment, frontendOptions, jwtOptions, oauthOptions, allowedOrigins);
+    }
+
+    private static N8nProvisioningOptions ResolveN8nProvisioningOptions(WebApplicationBuilder builder)
+    {
+        var section = builder.Configuration.GetSection("N8nProvisioning");
+
+        var options = new N8nProvisioningOptions
+        {
+            BaseUrl = ResolveConfigValue(section["BaseUrl"], "N8N_PROVISION_BASE_URL"),
+            ApiKey = ResolveConfigValue(section["ApiKey"], "N8N_PROVISION_API_KEY"),
+            RequestTimeoutSeconds = ResolveIntValue(section["RequestTimeoutSeconds"], "N8N_PROVISION_REQUEST_TIMEOUT_SECONDS", 30)
+        };
+
+        ValidateN8nRuntimeConfiguration(builder.Environment, options);
+        return options;
+    }
+
+    private static string ResolveConfigValue(string? sectionValue, string envKey)
+    {
+        var envValue = Environment.GetEnvironmentVariable(envKey);
+        return !string.IsNullOrWhiteSpace(envValue) ? envValue : (sectionValue ?? string.Empty);
+    }
+
+    private static int ResolveIntValue(string? sectionValue, string envKey, int defaultValue)
+    {
+        var envValue = Environment.GetEnvironmentVariable(envKey);
+        if (int.TryParse(envValue, out var parsedEnv))
+        {
+            return parsedEnv;
+        }
+
+        if (int.TryParse(sectionValue, out var parsedSection))
+        {
+            return parsedSection;
+        }
+
+        return defaultValue;
+    }
+
+    private static void ValidateN8nRuntimeConfiguration(IWebHostEnvironment environment, N8nProvisioningOptions options)
+    {
+        if (!environment.IsDevelopment())
+        {
+            EnsureNotPlaceholder(options.BaseUrl, "N8nProvisioning:BaseUrl");
+            EnsureNotPlaceholder(options.ApiKey, "N8nProvisioning:ApiKey");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.BaseUrl))
+        {
+            throw new InvalidOperationException("N8nProvisioning:BaseUrl is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.ApiKey))
+        {
+            throw new InvalidOperationException("N8nProvisioning:ApiKey is required.");
+        }
     }
 
     private static void ConfigureCors(WebApplicationBuilder builder)
@@ -253,6 +308,12 @@ public static class RaftPlatformModule
             options.AddPolicy("n8n-provisioning", context => BuildPolicy(
                 context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
                 5));
+            options.AddPolicy("dns-management", context => BuildPolicy(
+                context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
+                30));
+            options.AddPolicy("dns-provisioning", context => BuildPolicy(
+                context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
+                10));
             options.AddPolicy("database-provisioning", context => BuildPolicy(
                 context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString(),
                 10));

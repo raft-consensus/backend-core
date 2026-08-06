@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using raft_backend.Modules.Data;
 using raft_backend.Modules.Domain;
 using raft_backend.Modules.Hosting;
+using raft_backend.Modules.Dns;
 using raft_backend.Modules.Platform;
 using raft_backend.Modules.Provisioning;
 
@@ -14,6 +15,7 @@ public static class RaftModuleBootstrapper
         builder.AddRaftPlatformModule();
         builder.AddRaftDataModule();
         builder.AddRaftDomainModule();
+        builder.AddRaftDnsModule();
         builder.AddRaftProvisioningModule();
     }
 

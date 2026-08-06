@@ -852,6 +852,251 @@ BEGIN
 END
 ```
 
+---
+
+## 11. DNS — Registros aprovisionados para usuarios
+
+### 11.1 Tabla
+
+```sql
+CREATE TABLE dbo.DnsRecords (
+    Id INT IDENTITY(1,1) NOT NULL,
+    UserId INT NOT NULL,
+    Label NVARCHAR(63) NOT NULL,
+    RecordName NVARCHAR(255) NOT NULL,
+    Fqdn NVARCHAR(255) NOT NULL,
+    RecordType NVARCHAR(20) NOT NULL CONSTRAINT DF_DnsRecords_RecordType DEFAULT ('A'),
+    Content NVARCHAR(255) NOT NULL,
+    RecordTtl INT NOT NULL CONSTRAINT DF_DnsRecords_RecordTtl DEFAULT (1),
+    Proxied BIT NOT NULL CONSTRAINT DF_DnsRecords_Proxied DEFAULT (0),
+    CloudflareZoneId NVARCHAR(128) NOT NULL,
+    CloudflareRecordId NVARCHAR(128) NULL,
+    Status NVARCHAR(20) NOT NULL CONSTRAINT DF_DnsRecords_Status DEFAULT ('Pending'),
+    LastError NVARCHAR(4000) NULL,
+    Created_at DATETIME2 NOT NULL CONSTRAINT DF_DnsRecords_Created_at DEFAULT (SYSUTCDATETIME()),
+    Updated_at DATETIME2 NULL,
+    Revoked_at DATETIME2 NULL,
+    CONSTRAINT PK_DnsRecords PRIMARY KEY (Id),
+    CONSTRAINT FK_DnsRecords_Users_UserId FOREIGN KEY (UserId) REFERENCES dbo.Users (Id)
+);
+
+CREATE UNIQUE INDEX IX_DnsRecords_Fqdn_Active
+ON dbo.DnsRecords (Fqdn)
+WHERE Revoked_at IS NULL AND Status IN ('Pending', 'Active');
+
+CREATE INDEX IX_DnsRecords_UserId ON dbo.DnsRecords (UserId);
+
+CREATE INDEX IX_DnsRecords_UserId_Status ON dbo.DnsRecords (UserId, Status);
+
+CREATE INDEX IX_DnsRecords_Status ON dbo.DnsRecords (Status);
+```
+
+### 11.2 Stored Procedures
+
+#### 11.2.1 `usp_DnsRecords_GetAllByUserId`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetAllByUserId
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Label, RecordName, Fqdn, RecordType, Content,
+           RecordTtl, Proxied, CloudflareZoneId, CloudflareRecordId, Status,
+           LastError, Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Revoked_at AS RevokedAt
+    FROM dbo.DnsRecords
+    WHERE UserId = @UserId
+    ORDER BY Id DESC;
+END
+```
+
+#### 11.2.2 `usp_DnsRecords_GetAll`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetAll
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Label, RecordName, Fqdn, RecordType, Content,
+           RecordTtl, Proxied, CloudflareZoneId, CloudflareRecordId, Status,
+           LastError, Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Revoked_at AS RevokedAt
+    FROM dbo.DnsRecords
+    ORDER BY Id DESC;
+END
+```
+
+#### 11.2.3 `usp_DnsRecords_GetById`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetById
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Label, RecordName, Fqdn, RecordType, Content,
+           RecordTtl, Proxied, CloudflareZoneId, CloudflareRecordId, Status,
+           LastError, Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Revoked_at AS RevokedAt
+    FROM dbo.DnsRecords
+    WHERE Id = @Id;
+END
+```
+
+#### 11.2.4 `usp_DnsRecords_GetByIdAndUserId`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetByIdAndUserId
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Label, RecordName, Fqdn, RecordType, Content,
+           RecordTtl, Proxied, CloudflareZoneId, CloudflareRecordId, Status,
+           LastError, Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Revoked_at AS RevokedAt
+    FROM dbo.DnsRecords
+    WHERE Id = @Id
+      AND UserId = @UserId;
+END
+```
+
+#### 11.2.5 `usp_DnsRecords_GetActiveByUserIdAndFqdn`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetActiveByUserIdAndFqdn
+    @UserId INT,
+    @Fqdn NVARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (1) Id, UserId, Label, RecordName, Fqdn, RecordType, Content,
+           RecordTtl, Proxied, CloudflareZoneId, CloudflareRecordId, Status,
+           LastError, Created_at AS CreatedAt, Updated_at AS UpdatedAt,
+           Revoked_at AS RevokedAt
+    FROM dbo.DnsRecords
+    WHERE UserId = @UserId
+      AND Fqdn = @Fqdn
+      AND Status IN ('Pending', 'Active')
+      AND Revoked_at IS NULL
+    ORDER BY Id DESC;
+END
+```
+
+#### 11.2.6 `usp_DnsRecords_Create`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_Create
+    @UserId INT,
+    @Label NVARCHAR(63),
+    @RecordName NVARCHAR(255),
+    @Fqdn NVARCHAR(255),
+    @RecordType NVARCHAR(20),
+    @Content NVARCHAR(255),
+    @RecordTtl INT,
+    @Proxied BIT,
+    @CloudflareZoneId NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (
+        SELECT 1
+        FROM dbo.DnsRecords
+        WHERE Fqdn = @Fqdn
+          AND Status IN ('Pending', 'Active')
+          AND Revoked_at IS NULL
+    )
+    BEGIN
+        RETURN;
+    END
+
+    INSERT INTO dbo.DnsRecords
+        (UserId, Label, RecordName, Fqdn, RecordType, Content, RecordTtl, Proxied,
+         CloudflareZoneId, Status, Created_at)
+    VALUES
+        (@UserId, @Label, @RecordName, @Fqdn, @RecordType, @Content, @RecordTtl, @Proxied,
+         @CloudflareZoneId, 'Pending', SYSUTCDATETIME());
+
+    DECLARE @NewId INT = SCOPE_IDENTITY();
+    EXEC dbo.usp_DnsRecords_GetById @Id = @NewId;
+END
+```
+
+#### 11.2.7 `usp_DnsRecords_MarkProvisioned`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_MarkProvisioned
+    @Id INT,
+    @CloudflareRecordId NVARCHAR(128),
+    @CloudflareZoneId NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.DnsRecords
+    SET CloudflareRecordId = @CloudflareRecordId,
+        CloudflareZoneId = @CloudflareZoneId,
+        Status = 'Active',
+        Updated_at = SYSUTCDATETIME(),
+        LastError = NULL
+    WHERE Id = @Id
+      AND Revoked_at IS NULL;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        RETURN;
+    END
+
+    EXEC dbo.usp_DnsRecords_GetById @Id = @Id;
+END
+```
+
+#### 11.2.8 `usp_DnsRecords_MarkFailed`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_MarkFailed
+    @Id INT,
+    @LastError NVARCHAR(4000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.DnsRecords
+    SET Status = 'Failed',
+        Updated_at = SYSUTCDATETIME(),
+        LastError = @LastError
+    WHERE Id = @Id
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 11.2.9 `usp_DnsRecords_Revoke`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_Revoke
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.DnsRecords
+    SET Status = 'Revoked',
+        Updated_at = SYSUTCDATETIME(),
+        Revoked_at = SYSUTCDATETIME(),
+        LastError = NULL
+    WHERE Id = @Id
+      AND Revoked_at IS NULL;
+END
+```
+
 #### 9.2.2 `usp_AiApiKeys_GetById`
 
 ```sql

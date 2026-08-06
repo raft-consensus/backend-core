@@ -318,6 +318,74 @@ Si prefieres variables de entorno, usa:
 - `N8nProvisioning__ApiKey`
 - `N8nProvisioning__RequestTimeoutSeconds`
 
+### DNS como servicio de autoservicio
+
+El backend también expone un flujo para que el usuario cree y administre subdominios DNS desde la plataforma. El contrato local guarda estado en SQL Server y luego llama a Cloudflare con la API token configurada en `DnsProvisioning`.
+
+#### `GET /api/me/dns`
+
+Devuelve el historial local de registros DNS del usuario autenticado.
+
+#### `POST /api/me/dns/provision`
+
+Inicia el aprovisionamiento de un registro DNS para el usuario autenticado.
+
+Body de ejemplo:
+
+```json
+{
+  "label": "testdb",
+  "content": "49.13.85.216",
+  "recordTtl": 1,
+  "proxied": false
+}
+```
+
+El backend construye el hostname como `label.cellSubdomain.zoneName`. Con la configuración de ejemplo, `testdb` termina como `testdb.raft.andrescortes.dev`.
+
+La llamada que te enviaron por chat es exactamente el equivalente manual de este flujo:
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/zones/<zone-id>/dns_records" \
+  -H "Authorization: Bearer <cloudflare-api-token>" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "type": "A",
+    "name": "testdb.raft",
+    "content": "49.13.85.216",
+    "ttl": 1,
+    "proxied": false
+  }'
+```
+
+#### `DELETE /api/me/dns/{id}`
+
+Revoca un registro propio del usuario autenticado.
+
+#### Administración de registros DNS
+
+| Método | Ruta | Auth | Uso |
+| --- | --- | --- | --- |
+| `GET` | `/api/dns/records` | AdminOnly | Lista todos los registros DNS registrados en SQL Server. |
+| `GET` | `/api/dns/records/{id}` | AdminOnly | Devuelve un registro DNS por id. |
+| `POST` | `/api/dns/records/{id}/revoke` | AdminOnly | Revoca el registro DNS y lo marca como `Revoked`. |
+
+Configuración:
+
+- `DnsProvisioning:ZoneId`
+- `DnsProvisioning:ZoneName`
+- `DnsProvisioning:CellSubdomain`
+- `DnsProvisioning:ApiToken`
+- `DnsProvisioning:DefaultContent`
+
+Si prefieres variables de entorno, usa:
+
+- `DnsProvisioning__ZoneId`
+- `DnsProvisioning__ZoneName`
+- `DnsProvisioning__CellSubdomain`
+- `DnsProvisioning__ApiToken`
+- `DnsProvisioning__DefaultContent`
+
 ### IA con API-Key
 
 La IA se maneja en dos capas:

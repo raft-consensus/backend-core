@@ -108,13 +108,13 @@ public class N8nProvisioningService : IN8nProvisioningService
         {
             var current = await GetActiveByUserIdAsync(userId, cancellationToken);
             if (current is not null)
+        {
+            return new N8nProvisioningResultDto
             {
-                return new N8nProvisioningResultDto
-                {
-                    Created = false,
-                    Account = current
-                };
-            }
+                Created = false,
+                Account = current
+            };
+        }
 
             throw new InvalidOperationException("The N8N provisioning record could not be created.");
         }
@@ -185,7 +185,9 @@ public class N8nProvisioningService : IN8nProvisioningService
         return new N8nProvisioningResultDto
         {
             Created = true,
-            Account = provisioned
+            Account = provisioned,
+            AccessType = remoteResponse.AccessType,
+            Credential = remoteResponse.Credential
         };
     }
 
@@ -336,5 +338,11 @@ public class N8nProvisioningService : IN8nProvisioningService
 
         [JsonPropertyName("status")]
         public string Status { get; set; } = string.Empty;
+
+        [JsonPropertyName("access_type")]
+        public string? AccessType { get; set; }
+
+        [JsonPropertyName("credential")]
+        public string? Credential { get; set; }
     }
 }

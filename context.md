@@ -20,6 +20,7 @@ En la implementación actual, la composición del backend quedó separada en mó
 - `Domain`: servicios de aplicación, tracker de disponibilidad y background jobs.
 - `Provisioning`: implementaciones por motor y resolver de aprovisionamiento.
 - `Hosting`: pipeline HTTP, forwarded headers y middleware transversal.
+- `Dns`: provisión de subdominios DNS sobre Cloudflare y trazabilidad local.
 
 `Program.cs` quedó como bootstrap mínimo para cargar esos módulos.
 Requerimientos Técnicos
