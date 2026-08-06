@@ -10,8 +10,7 @@ public class DnsProvisioningOptions
     [Required]
     public string ZoneName { get; set; } = string.Empty;
 
-    [Required]
-    public string CellSubdomain { get; set; } = "raft";
+    public string CellSubdomain { get; set; } = string.Empty;
 
     [Required]
     public string ApiToken { get; set; } = string.Empty;

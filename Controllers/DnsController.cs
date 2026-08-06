@@ -57,9 +57,10 @@ public class DnsController : ControllerBase
         });
     }
 
+    [HttpPost]
     [HttpPost("provision")]
     [EnableRateLimiting("dns-provisioning")]
-    public async Task<ActionResult<ServiceResponse<DnsProvisioningResultDto>>> Provision(DnsRecordCreateDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult<ServiceResponse<DnsProvisioningResultDto>>> Provision([FromBody] DnsRecordCreateDto dto, CancellationToken cancellationToken)
     {
         var userId = GetUserId();
 
@@ -99,6 +100,43 @@ public class DnsController : ControllerBase
                 Message = "You already have an active DNS record for that hostname.",
                 Data = result
             });
+    }
+
+    [HttpPut("{id:int}")]
+    [EnableRateLimiting("dns-management")]
+    public async Task<ActionResult<ServiceResponse<DnsRecordReadDto>>> Update(int id, [FromBody] DnsRecordUpdateDto dto, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+
+        DnsRecordReadDto? updated;
+        try
+        {
+            updated = await _service.UpdateAsync(userId, id, dto, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(StatusCodes.Status500InternalServerError, new ServiceResponse<DnsRecordReadDto>
+            {
+                Success = false,
+                Message = $"The DNS record could not be updated: {ex.Message}"
+            });
+        }
+
+        if (updated is null)
+        {
+            return NotFound(new ServiceResponse<DnsRecordReadDto>
+            {
+                Success = false,
+                Message = "DNS record not found or not active."
+            });
+        }
+
+        return Ok(new ServiceResponse<DnsRecordReadDto>
+        {
+            Success = true,
+            Message = "DNS record updated successfully.",
+            Data = updated
+        });
     }
 
     [HttpDelete("{id:int}")]

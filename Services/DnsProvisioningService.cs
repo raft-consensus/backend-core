@@ -41,7 +41,6 @@ public partial class DnsProvisioningService : IDnsProvisioningService
     public bool IsAvailable =>
         !string.IsNullOrWhiteSpace(_options.ZoneId) &&
         !string.IsNullOrWhiteSpace(_options.ZoneName) &&
-        !string.IsNullOrWhiteSpace(_options.CellSubdomain) &&
         !string.IsNullOrWhiteSpace(_options.ApiToken);
 
     public int MaxRecordsPerUser => _options.MaxRecordsPerUser;
@@ -112,6 +111,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
         var content = string.IsNullOrWhiteSpace(dto.Content)
             ? _options.DefaultContent.Trim()
             : dto.Content.Trim();
+        var comment = dto.Comment?.Trim();
         var ttl = dto.RecordTtl.GetValueOrDefault(_options.RecordTtl);
         var proxied = dto.Proxied.GetValueOrDefault(_options.Proxied);
 
@@ -151,6 +151,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
                 command.AddParameter("@Fqdn", fqdn);
                 command.AddParameter("@RecordType", "A");
                 command.AddParameter("@Content", content);
+                command.AddParameter("@Comment", comment);
                 command.AddParameter("@RecordTtl", ttl);
                 command.AddParameter("@Proxied", proxied);
                 command.AddParameter("@CloudflareZoneId", _options.ZoneId);
@@ -178,13 +179,13 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             UserId = userId,
             EventType = "DnsProvisioningStarted",
             Description = $"DNS provisioning started for {fqdn}.",
-            AdditionalData = SafeJson(new { fqdn, label, content, ttl, proxied })
+            AdditionalData = SafeJson(new { fqdn, label, content, comment, ttl, proxied })
         }, cancellationToken);
 
         CloudflareDnsRecord? remoteRecord;
         try
         {
-            remoteRecord = await CreateRemoteRecordAsync(recordName, content, ttl, proxied, cancellationToken);
+            remoteRecord = await CreateRemoteRecordAsync(recordName, content, comment, ttl, proxied, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -244,6 +245,68 @@ public partial class DnsProvisioningService : IDnsProvisioningService
         };
     }
 
+    public async Task<DnsRecordReadDto?> UpdateAsync(int userId, int id, DnsRecordUpdateDto dto, CancellationToken cancellationToken = default)
+    {
+        if (!IsAvailable)
+        {
+            throw new InvalidOperationException("DNS provisioning is not available.");
+        }
+
+        var existing = await GetByIdForUserAsync(userId, id, cancellationToken);
+        if (existing is null)
+        {
+            return null;
+        }
+
+        var label = string.IsNullOrWhiteSpace(dto.Label) ? existing.Label : NormalizeLabel(dto.Label);
+        var recordName = BuildRecordName(label);
+        var fqdn = BuildFqdn(recordName);
+        var content = string.IsNullOrWhiteSpace(dto.Content) ? existing.Content : dto.Content.Trim();
+        var comment = dto.Comment is not null ? dto.Comment.Trim() : existing.Comment;
+        var ttl = dto.RecordTtl.GetValueOrDefault(existing.RecordTtl);
+        var proxied = dto.Proxied.GetValueOrDefault(existing.Proxied);
+
+        if (!IsValidContent(content))
+        {
+            throw new InvalidOperationException("DNS content must be a valid IP address for A records.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(existing.CloudflareRecordId))
+        {
+            await UpdateRemoteRecordAsync(existing.CloudflareRecordId, recordName, content, comment, ttl, proxied, cancellationToken);
+        }
+
+        var updated = await _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.DnsRecords_Update,
+            command =>
+            {
+                command.AddParameter("@Id", id);
+                command.AddParameter("@UserId", userId);
+                command.AddParameter("@Label", label);
+                command.AddParameter("@RecordName", recordName);
+                command.AddParameter("@Fqdn", fqdn);
+                command.AddParameter("@Content", content);
+                command.AddParameter("@Comment", comment);
+                command.AddParameter("@RecordTtl", ttl);
+                command.AddParameter("@Proxied", proxied);
+            },
+            Map,
+            cancellationToken);
+
+        if (updated is not null)
+        {
+            await _auditEventService.CreateAsync(new AuditEventCreateDto
+            {
+                UserId = userId,
+                EventType = "DnsUpdated",
+                Description = $"DNS record {fqdn} was updated successfully.",
+                AdditionalData = SafeJson(new { id, fqdn, content, comment, proxied })
+            }, cancellationToken);
+        }
+
+        return updated;
+    }
+
     public Task<bool> RevokeAsync(int id, CancellationToken cancellationToken = default)
     {
         return RevokeInternalAsync(null, id, cancellationToken);
@@ -293,7 +356,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
         return items.Count(record => !string.Equals(record.Status, "Revoked", StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<CloudflareDnsRecord> CreateRemoteRecordAsync(string recordName, string content, int ttl, bool proxied, CancellationToken cancellationToken)
+    private async Task<CloudflareDnsRecord> CreateRemoteRecordAsync(string recordName, string content, string? comment, int ttl, bool proxied, CancellationToken cancellationToken)
     {
         using var client = CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, $"{CloudflareBaseUrl}zones/{_options.ZoneId}/dns_records");
@@ -303,6 +366,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             type = "A",
             name = recordName,
             content,
+            comment,
             ttl,
             proxied
         });
@@ -321,6 +385,42 @@ public partial class DnsProvisioningService : IDnsProvisioningService
         });
 
         if (parsed is null || !parsed.Success || parsed.Result is null || string.IsNullOrWhiteSpace(parsed.Result.Id))
+        {
+            throw new InvalidOperationException(BuildCloudflareError(body, response.StatusCode));
+        }
+
+        return parsed.Result;
+    }
+
+    private async Task<CloudflareDnsRecord> UpdateRemoteRecordAsync(string recordId, string recordName, string content, string? comment, int ttl, bool proxied, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"{CloudflareBaseUrl}zones/{_options.ZoneId}/dns_records/{recordId}");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiToken);
+        request.Content = JsonContent.Create(new
+        {
+            type = "A",
+            name = recordName,
+            content,
+            comment,
+            ttl,
+            proxied
+        });
+
+        using var response = await client.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildCloudflareError(body, response.StatusCode));
+        }
+
+        var parsed = JsonSerializer.Deserialize<CloudflareResponse<CloudflareDnsRecord>>(body, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (parsed is null || !parsed.Success || parsed.Result is null)
         {
             throw new InvalidOperationException(BuildCloudflareError(body, response.StatusCode));
         }
@@ -364,6 +464,11 @@ public partial class DnsProvisioningService : IDnsProvisioningService
 
     private string BuildRecordName(string label)
     {
+        if (string.IsNullOrWhiteSpace(_options.CellSubdomain))
+        {
+            return label.Trim().TrimEnd('.');
+        }
+
         return $"{label}.{_options.CellSubdomain.Trim().TrimEnd('.')}".Trim('.');
     }
 
@@ -429,6 +534,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             Fqdn = reader.GetStringOrEmpty("Fqdn"),
             RecordType = reader.GetStringOrEmpty("RecordType"),
             Content = reader.GetStringOrEmpty("Content"),
+            Comment = reader.GetNullableString("Comment"),
             RecordTtl = reader.GetInt32Value("RecordTtl"),
             Proxied = reader.GetBooleanValue("Proxied"),
             CloudflareZoneId = reader.GetNullableString("CloudflareZoneId"),

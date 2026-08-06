@@ -34,7 +34,10 @@ public static class RaftDnsModule
         {
             EnsureNotPlaceholder(options.ZoneId, "DnsProvisioning:ZoneId");
             EnsureNotPlaceholder(options.ZoneName, "DnsProvisioning:ZoneName");
-            EnsureNotPlaceholder(options.CellSubdomain, "DnsProvisioning:CellSubdomain");
+            if (!string.IsNullOrWhiteSpace(options.CellSubdomain))
+            {
+                EnsureNotPlaceholder(options.CellSubdomain, "DnsProvisioning:CellSubdomain");
+            }
             EnsureNotPlaceholder(options.ApiToken, "DnsProvisioning:ApiToken");
             EnsureNotPlaceholder(options.DefaultContent, "DnsProvisioning:DefaultContent");
         }
@@ -47,11 +50,6 @@ public static class RaftDnsModule
         if (string.IsNullOrWhiteSpace(options.ZoneName))
         {
             throw new InvalidOperationException("DnsProvisioning:ZoneName is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(options.CellSubdomain))
-        {
-            throw new InvalidOperationException("DnsProvisioning:CellSubdomain is required.");
         }
 
         if (string.IsNullOrWhiteSpace(options.ApiToken))

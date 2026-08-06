@@ -20,6 +20,8 @@ public interface IDnsProvisioningService
 
     Task<DnsProvisioningResultDto?> ProvisionAsync(int userId, DnsRecordCreateDto dto, CancellationToken cancellationToken = default);
 
+    Task<DnsRecordReadDto?> UpdateAsync(int userId, int id, DnsRecordUpdateDto dto, CancellationToken cancellationToken = default);
+
     Task<bool> RevokeAsync(int id, CancellationToken cancellationToken = default);
 
     Task<bool> RevokeAsync(int userId, int id, CancellationToken cancellationToken = default);
