@@ -2,8 +2,8 @@
 
 > **Fecha de Auditoría:** 2026-08-04  
 > **Servidor BD:** `49.13.85.216` (Base de Datos: `RaftDb`)  
-> **Backend Framework:** .NET 10 Web API (`raft-backend.csproj`)  
-> **Total Procedimientos Analizados:** 35 SPs
+> **Backend Framework:** .NET 10 Web API (`raft-backend.csproj`), organizado como monolito modular bajo `Modules/`  
+> **Total Procedimientos Analizados:** 44 SPs
 
 ---
 
@@ -52,7 +52,7 @@ flowchart TD
 
 ---
 
-## 📊 Matriz Detallada de Diagnóstico y Auditoría (35 SPs)
+## 📊 Matriz Detallada de Diagnóstico y Auditoría (44 SPs)
 
 ### 1. Dominio: Usuarios y Autenticación
 
@@ -133,6 +133,22 @@ flowchart TD
 
 ## 📌 Resumen Ejecutivo para la Toma de Decisiones
 
-1. **No requiere conocimientos en C# para operarlo:** La lógica de negocio está completamente contenida en los 35 Stored Procedures de SQL Server. Modificar reglas de cuotas, límites de bases por usuario o tiempos de inactividad se realiza editando directamente los Stored Procedures o los registros de configuración en SQL Server.
+1. **No requiere conocimientos en C# para operarlo:** La lógica de negocio está completamente contenida en los 44 Stored Procedures de SQL Server. Modificar reglas de cuotas, límites de bases por usuario, DNS o tiempos de inactividad se realiza editando directamente los Stored Procedures o los registros de configuración en SQL Server.
 2. **Seguridad Multi-inquilino (Multi-tenant):** Toda consulta Self-Service del estudiante (`/api/me/*`) depende de procedimientos como `usp_AccessCredentials_GetDecryptableByOwner` que obligan a verificar en la cláusula `WHERE` que `UserId` coincida con el dueño de la instancia.
 3. **Flujos Administrativos aislados:** Las rutas etiquetadas como `Admin` (`GET /api/users`, `GET /api/database-instances`, etc.) están protegidas en el backend por filtros de autorización JWT que exigen el rol `Admin`.
+
+---
+
+### 7. Dominio: DNS y Subdominios
+
+| # | Stored Procedure | Servicio C# Invocador | Endpoint HTTP / Origen | Diagnóstico y Estado | Descripción y Lógica Interna (SQL Server) | Información Complementaria y Contexto |
+|---|---|---|---|---|---|---|
+| 36 | `usp_DnsRecords_GetAllByUserId` | `DnsProvisioningService.GetAllByUserIdAsync` | `GET /api/me/dns` | 🟢 **Activo (Self-Service)** | Lista los registros DNS del usuario autenticado. | Fuente de verdad local para el historial de subdominios creados por el usuario. |
+| 37 | `usp_DnsRecords_GetAll` | `DnsProvisioningService.GetAllAsync` | `GET /api/dns/records` | 🟢 **Activo (Admin)** | Lista todos los registros DNS aprovisionados en la plataforma. | Permite al administrador auditar el inventario global de subdominios. |
+| 38 | `usp_DnsRecords_GetById` | `DnsProvisioningService.GetByIdAsync` | `GET /api/dns/records/{id}` | 🟢 **Activo (Admin / Core)** | Recupera un registro DNS por su identificador interno. | Retorna label, FQDN, content, estado y metadatos de sincronización. |
+| 39 | `usp_DnsRecords_GetByIdAndUserId` | `DnsProvisioningService.GetByIdForUserAsync` | `GET /api/me/dns/{id}` | 🟢 **Activo (Self-Service)** | Recupera un registro DNS solo si pertenece al usuario autenticado. | Evita exposición cruzada entre usuarios. |
+| 40 | `usp_DnsRecords_GetActiveByUserIdAndFqdn` | `DnsProvisioningService.ProvisionAsync` | `POST /api/me/dns/provision` | 🟢 **Activo (Self-Service Core)** | Detecta si el usuario ya tiene un subdominio activo o pendiente con el mismo FQDN. | Evita duplicar subdominios y respeta la cuota por usuario. |
+| 41 | `usp_DnsRecords_Create` | `DnsProvisioningService.ProvisionAsync` | `POST /api/me/dns/provision` | 🟢 **Activo (Self-Service Core)** | Inserta el registro local en estado `Pending` antes de llamar a Cloudflare. | La BD es la fuente de trazabilidad aunque la creación real se haga en Cloudflare. |
+| 42 | `usp_DnsRecords_MarkProvisioned` | `DnsProvisioningService.ProvisionAsync` | `POST /api/me/dns/provision` | 🟢 **Activo (Self-Service Core)** | Marca el registro como `Active` después de recibir el `dns_record_id` de Cloudflare. | Guarda el id remoto para poder revocar el registro posteriormente. |
+| 43 | `usp_DnsRecords_MarkFailed` | `DnsProvisioningService.ProvisionAsync` | `POST /api/me/dns/provision` | 🟢 **Activo (Self-Service Core)** | Marca la provisión como `Failed` y almacena el error. | Útil cuando Cloudflare responde con error o la sincronización local falla. |
+| 44 | `usp_DnsRecords_Revoke` | `DnsProvisioningService.RevokeAsync` | `DELETE /api/me/dns/{id}` y `POST /api/dns/records/{id}/revoke` | 🟢 **Activo (Self-Service / Admin)** | Marca el registro DNS como `Revoked` y conserva el historial local. | El backend también elimina el record remoto en Cloudflare si existe `CloudflareRecordId`. |

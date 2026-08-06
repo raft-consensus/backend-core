@@ -7,6 +7,18 @@ The backend uses:
 - SQL Server as the shared core for all team backends in the VPS.
 - `ServiceResponse<T>` as the standard response wrapper.
 
+## Code organization
+
+This backend is now organized as a modular monolith. `Program.cs` only bootstraps the app; the actual composition lives under `Modules/`.
+
+- `Modules/Platform` — auth, OAuth, CORS, rate limiting, and runtime configuration validation.
+- `Modules/Data` — DbContexts, Data Protection, and SQL connection bootstrap.
+- `Modules/Domain` — application services, trackers, and the lifecycle background worker.
+- `Modules/Provisioning` — engine-specific provisioning implementations and the resolver.
+- `Modules/Hosting` — middleware pipeline, forwarded headers, and request availability tracking.
+
+Controllers still live in `Controllers/`, but their dependencies are wired through the module layer instead of a long top-level startup file.
+
 ## Configuration
 
 Define these connection strings in `appsettings.json` or environment variables:
@@ -41,6 +53,17 @@ Define these connection strings in `appsettings.json` or environment variables:
     "DefaultMaxSpaceBytes": 20971520,
     "PasswordLength": 24
   },
+  "DnsProvisioning": {
+    "ZoneId": "c1c62663d28fa916dc9bc030103e6e83",
+    "ZoneName": "andrescortes.dev",
+    "CellSubdomain": "raft",
+    "ApiToken": "replace-with-cloudflare-dns-token",
+    "DefaultContent": "49.13.85.216",
+    "RecordTtl": 1,
+    "Proxied": false,
+    "MaxRecordsPerUser": 10,
+    "RequestTimeoutSeconds": 30
+  },
   "AiService": {
     "Providers": [
       {
@@ -70,15 +93,26 @@ Define these connection strings in `appsettings.json` or environment variables:
     "ApiKeyRateLimitPerMinute": 20,
     "ManagementRateLimitPerMinute": 20
   },
+  "N8nProvisioning": {
+    "BaseUrl": "https://api.snapshot.andrescortes.dev",
+    "ApiKey": "replace-with-n8n-provisioning-api-key",
+    "RequestTimeoutSeconds": 30
+  },
   "DataProtection": {
     "KeysPath": "/app/keys"
   }
 }
 ```
 
-Important note: `appsettings.json` still contains sample values and is not yet wired to GitHub Secrets or secure environment variables. Before deploying to production, move `ConnectionStrings`, `Jwt`, and `OAuth` into environment secrets or a secret mounted by the pipeline.
+Important note: `appsettings.json` still contains sample values and is not yet wired to GitHub Secrets or secure environment variables. Before deploying to production, move `ConnectionStrings`, `Jwt`, `OAuth`, `N8nProvisioning`, and `DnsProvisioning` into environment secrets or a secret mounted by the pipeline.
 
 `ConnectionStrings:RaftDb` must point to the shared SQL Server instance in the VPS. If that host, port, or credentials change later, only `appsettings.json` or the corresponding environment variables need to be updated; the backend code reads them through configuration.
+
+For N8N provisioning, the runtime reads `N8nProvisioning:BaseUrl` and `N8nProvisioning:ApiKey`. If you prefer environment variables, use `N8nProvisioning__BaseUrl` and `N8nProvisioning__ApiKey`.
+
+For DNS provisioning, the runtime reads `DnsProvisioning:ZoneId`, `DnsProvisioning:ZoneName`, `DnsProvisioning:CellSubdomain`, `DnsProvisioning:ApiToken`, and `DnsProvisioning:DefaultContent`. If you prefer environment variables, use the corresponding double-underscore form: `DnsProvisioning__ZoneId`, `DnsProvisioning__ZoneName`, `DnsProvisioning__CellSubdomain`, `DnsProvisioning__ApiToken`, and `DnsProvisioning__DefaultContent`.
+
+The Cloudflare `curl` your teammate shared is the raw DNS-create call this backend now automates. It posts an `A` record into the configured zone with a bearer token, a hostname label, the target IP, automatic TTL (`1`), and `proxied: false`.
 
 `Frontend:BaseUrl` drives the OAuth callback redirect (`{BaseUrl}{CallbackPath}#access_token=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. For CORS, `Program.cs` accepts `Frontend:Origins` first and falls back to `Frontend:BaseUrl` if that list is empty. See [`API.md`](API.md) for the exact contract.
 

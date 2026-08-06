@@ -12,6 +12,17 @@ Roles de cada componente:
 Motor de Base de Datos compartido en la VPS (SQL Server): almacena los datos y ejecuta el 100% de la lógica de negocio mediante Stored Procedures (SPs) para operaciones de escritura/modificación, Views para consultas complejas, y Functions para cálculos o transformaciones de datos. Esta base de datos es consumida por todos los backends de los equipos.
 Backend de esta célula: actúa como un middleware de paso para nuestra página. Se encarga de exponer los endpoints HTTP, gestionar la autenticación/autorización, aplicar políticas de tráfico (Rate Limiting) y mapear los resultados de la base de datos hacia el cliente.
 Backends de otras células: cada equipo tiene su propio backend y su propia interfaz. Esos backends pueden consumir el mismo SQL Server compartido de la VPS o, en otras fases, otros servicios que pertenezcan a células distintas.
+
+En la implementación actual, la composición del backend quedó separada en módulos dentro de `Modules/`:
+
+- `Platform`: arranque web, autenticación, OAuth, CORS y rate limiting.
+- `Data`: DbContexts, Data Protection y conexión con SQL Server.
+- `Domain`: servicios de aplicación, tracker de disponibilidad y background jobs.
+- `Provisioning`: implementaciones por motor y resolver de aprovisionamiento.
+- `Hosting`: pipeline HTTP, forwarded headers y middleware transversal.
+- `Dns`: provisión de subdominios DNS sobre Cloudflare y trazabilidad local.
+
+`Program.cs` quedó como bootstrap mínimo para cargar esos módulos.
 Requerimientos Técnicos
 Para garantizar la mantenibilidad y el desacoplamiento en el backend, se deberán seguir estrictamente los siguientes lineamientos:
 

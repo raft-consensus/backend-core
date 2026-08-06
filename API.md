@@ -26,6 +26,8 @@ Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos ho
 
 **Arquitectura por células:** este backend administra la célula de Raft. SQL Server sigue siendo el core compartido, pero MySQL, PostgreSQL y MongoDB ya están integrados como motores soportados por este backend cuando su conexión externa está disponible. El camino principal no se mezcla con contratos futuros: ya existe un catálogo dinámico de motores y cada uno declara su disponibilidad en runtime.
 
+**Code organization:** `Program.cs` ahora solo compone módulos. La aplicación real vive en `Modules/Platform`, `Modules/Data`, `Modules/Domain`, `Modules/Provisioning` y `Modules/Hosting`.
+
 **Rate limiting:**
 
 | Alcance | Límite | Aplica a |
@@ -34,7 +36,9 @@ Guía para el equipo de frontend de Raft. Cubre todos los endpoints expuestos ho
 | `auth` (por IP) | 10 req/min | `/api/auth/*` |
 | `credential-reveal` (por usuario) | 5 req/min | `GET /api/me/databases/{id}/password` |
 | `database-management` (por usuario) | 10 req/min | `POST /api/me/databases/{id}/pause`, `POST /api/me/databases/{id}/resume`, `DELETE /api/me/databases/{id}` |
-| `admin-ops` (por admin) | 30 req/min | `GET/POST/PUT/DELETE` de `/api/users`, `/api/database-instances`, `/api/access-credentials`, `/api/audit-events`, y `GET /api/users/{userId}/dashboard` |
+| `n8n-management` (por usuario) | 30 req/min | `GET /api/me/n8n` |
+| `n8n-provisioning` (por usuario) | 5 req/min | `POST /api/me/n8n/provision` |
+| `admin-ops` (por admin) | 30 req/min | `GET/POST/PUT/DELETE` de `/api/users`, `/api/database-instances`, `/api/access-credentials`, `/api/audit-events`, `GET /api/users/{userId}/dashboard`, `GET/POST /api/n8n/accounts*` |
 
 ---
 
@@ -223,6 +227,164 @@ Revela la contraseña de una instancia — solo si pertenece al usuario autentic
 `404` si el `databaseInstanceId` no existe o no le pertenece al usuario del token (mismo mensaje en ambos casos, a propósito — no revela si la instancia existe pero es de otro).
 
 Con esto más lo que ya trae `GET /api/me/databases`, el frontend tiene todos los campos que pide el entregable: host, puerto, nombre de BD, usuario, contraseña (bajo demanda), motor, fecha de creación y estado.
+
+### N8N como servicio de autoservicio
+
+El backend expone un flujo propio para que el usuario pida su cuenta de N8N desde la plataforma. El contrato local guarda estado en SQL Server y luego llama a la célula externa de N8N con la API key configurada en `N8nProvisioning`.
+
+### `GET /api/me/n8n`
+
+Devuelve el historial local de cuentas/provisiones de N8N del usuario autenticado.
+
+```json
+{
+  "success": true,
+  "message": "N8N accounts retrieved successfully.",
+  "data": [
+    {
+      "id": 1,
+      "userId": 5,
+      "externalUserRef": "5",
+      "email": "alumno@correo.com",
+      "accountId": "n8n-acc-123",
+      "status": "Active",
+      "createdAt": "2026-08-05T12:00:00Z",
+      "updatedAt": "2026-08-05T12:01:30Z",
+      "provisionedAt": "2026-08-05T12:01:30Z",
+      "revokedAt": null,
+      "lastSyncedAt": "2026-08-05T12:01:30Z",
+      "lastErrorMessage": null
+    }
+  ]
+}
+```
+
+### `POST /api/me/n8n/provision`
+
+Inicia el aprovisionamiento de la cuenta de N8N para el usuario autenticado. El backend usa el id interno del usuario como `external_user_ref` y el email del perfil como `email`.
+
+La respuesta distingue dos casos:
+
+- `Created = true`: se creó una cuenta nueva.
+- `Created = false`: ya existía una cuenta `Pending` o `Active` para ese usuario y no se reprovisiona.
+
+Ejemplo:
+
+```json
+{
+  "success": true,
+  "message": "N8N account provisioned successfully.",
+  "data": {
+    "created": true,
+    "account": {
+      "id": 1,
+      "userId": 5,
+      "externalUserRef": "5",
+      "email": "alumno@correo.com",
+      "accountId": "n8n-acc-123",
+      "status": "Active",
+      "createdAt": "2026-08-05T12:00:00Z",
+      "updatedAt": "2026-08-05T12:01:30Z",
+      "provisionedAt": "2026-08-05T12:01:30Z",
+      "revokedAt": null,
+      "lastSyncedAt": "2026-08-05T12:01:30Z",
+      "lastErrorMessage": null
+    }
+  }
+}
+```
+
+Si la célula externa responde con error, el backend marca la cuenta local como `Failed`, guarda el error en SQL Server y responde `502`.
+
+#### Administración de cuentas N8N
+
+| Método | Ruta | Auth | Uso |
+| --- | --- | --- | --- |
+| `GET` | `/api/n8n/accounts` | AdminOnly | Lista todas las cuentas N8N registradas en SQL Server. |
+| `GET` | `/api/n8n/accounts/{id}` | AdminOnly | Devuelve una cuenta N8N por id. |
+| `POST` | `/api/n8n/accounts/{id}/revoke` | AdminOnly | Revoca localmente la cuenta N8N y la marca como `Revoked`. |
+
+La revocación es local porque el contrato externo de la célula de N8N no expone un endpoint de revocación. El backend deja trazabilidad en `AuditEvents` y en `N8nAccounts.Status`.
+
+Configuración:
+
+- `N8nProvisioning:BaseUrl`
+- `N8nProvisioning:ApiKey`
+- `N8nProvisioning:RequestTimeoutSeconds`
+
+Si prefieres variables de entorno, usa:
+
+- `N8nProvisioning__BaseUrl`
+- `N8nProvisioning__ApiKey`
+- `N8nProvisioning__RequestTimeoutSeconds`
+
+### DNS como servicio de autoservicio
+
+El backend también expone un flujo para que el usuario cree y administre subdominios DNS desde la plataforma. El contrato local guarda estado en SQL Server y luego llama a Cloudflare con la API token configurada en `DnsProvisioning`.
+
+#### `GET /api/me/dns`
+
+Devuelve el historial local de registros DNS del usuario autenticado.
+
+#### `POST /api/me/dns/provision`
+
+Inicia el aprovisionamiento de un registro DNS para el usuario autenticado.
+
+Body de ejemplo:
+
+```json
+{
+  "label": "testdb",
+  "content": "49.13.85.216",
+  "recordTtl": 1,
+  "proxied": false
+}
+```
+
+El backend construye el hostname como `label.cellSubdomain.zoneName`. Con la configuración de ejemplo, `testdb` termina como `testdb.raft.andrescortes.dev`.
+
+La llamada que te enviaron por chat es exactamente el equivalente manual de este flujo:
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/zones/<zone-id>/dns_records" \
+  -H "Authorization: Bearer <cloudflare-api-token>" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "type": "A",
+    "name": "testdb.raft",
+    "content": "49.13.85.216",
+    "ttl": 1,
+    "proxied": false
+  }'
+```
+
+#### `DELETE /api/me/dns/{id}`
+
+Revoca un registro propio del usuario autenticado.
+
+#### Administración de registros DNS
+
+| Método | Ruta | Auth | Uso |
+| --- | --- | --- | --- |
+| `GET` | `/api/dns/records` | AdminOnly | Lista todos los registros DNS registrados en SQL Server. |
+| `GET` | `/api/dns/records/{id}` | AdminOnly | Devuelve un registro DNS por id. |
+| `POST` | `/api/dns/records/{id}/revoke` | AdminOnly | Revoca el registro DNS y lo marca como `Revoked`. |
+
+Configuración:
+
+- `DnsProvisioning:ZoneId`
+- `DnsProvisioning:ZoneName`
+- `DnsProvisioning:CellSubdomain`
+- `DnsProvisioning:ApiToken`
+- `DnsProvisioning:DefaultContent`
+
+Si prefieres variables de entorno, usa:
+
+- `DnsProvisioning__ZoneId`
+- `DnsProvisioning__ZoneName`
+- `DnsProvisioning__CellSubdomain`
+- `DnsProvisioning__ApiToken`
+- `DnsProvisioning__DefaultContent`
 
 ### IA con API-Key
 
