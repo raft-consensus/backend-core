@@ -57,6 +57,7 @@ public static class StoredProcedureNames
     public const string DnsRecords_GetByIdAndUserId = "usp_DnsRecords_GetByIdAndUserId";
     public const string DnsRecords_GetActiveByUserIdAndFqdn = "usp_DnsRecords_GetActiveByUserIdAndFqdn";
     public const string DnsRecords_Create = "usp_DnsRecords_Create";
+    public const string DnsRecords_Update = "usp_DnsRecords_Update";
     public const string DnsRecords_MarkProvisioned = "usp_DnsRecords_MarkProvisioned";
     public const string DnsRecords_MarkFailed = "usp_DnsRecords_MarkFailed";
     public const string DnsRecords_Revoke = "usp_DnsRecords_Revoke";
