@@ -1,9 +1,10 @@
-name: production
+name: deploy
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   packages: write
@@ -12,7 +13,7 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    environment: production
+    environment: deploy
 
     steps:
       - name: Checkout repository
@@ -44,7 +45,7 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    environment: production
+    environment: deploy
 
     steps:
       # MySQL (and SQL Server/Postgres/Mongo) run as independent containers already managed

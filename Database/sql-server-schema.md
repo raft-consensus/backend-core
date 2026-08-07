@@ -854,9 +854,9 @@ END
 
 ---
 
-## 11. DNS — Registros aprovisionados para usuarios
+## 10. DNS — Registros aprovisionados para usuarios
 
-### 11.1 Tabla
+### 10.1 Tabla
 
 ```sql
 CREATE TABLE dbo.DnsRecords (
@@ -891,9 +891,9 @@ CREATE INDEX IX_DnsRecords_UserId_Status ON dbo.DnsRecords (UserId, Status);
 CREATE INDEX IX_DnsRecords_Status ON dbo.DnsRecords (Status);
 ```
 
-### 11.2 Stored Procedures
+### 10.2 Stored Procedures
 
-#### 11.2.1 `usp_DnsRecords_GetAllByUserId`
+#### 10.2.1 `usp_DnsRecords_GetAllByUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetAllByUserId
@@ -912,7 +912,7 @@ BEGIN
 END
 ```
 
-#### 11.2.2 `usp_DnsRecords_GetAll`
+#### 10.2.2 `usp_DnsRecords_GetAll`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetAll
@@ -929,7 +929,7 @@ BEGIN
 END
 ```
 
-#### 11.2.3 `usp_DnsRecords_GetById`
+#### 10.2.3 `usp_DnsRecords_GetById`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetById
@@ -947,7 +947,7 @@ BEGIN
 END
 ```
 
-#### 11.2.4 `usp_DnsRecords_GetByIdAndUserId`
+#### 10.2.4 `usp_DnsRecords_GetByIdAndUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetByIdAndUserId
@@ -967,7 +967,7 @@ BEGIN
 END
 ```
 
-#### 11.2.5 `usp_DnsRecords_GetActiveByUserIdAndFqdn`
+#### 10.2.5 `usp_DnsRecords_GetActiveByUserIdAndFqdn`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_GetActiveByUserIdAndFqdn
@@ -990,7 +990,7 @@ BEGIN
 END
 ```
 
-#### 11.2.6 `usp_DnsRecords_Create`
+#### 10.2.6 `usp_DnsRecords_Create`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_Create
@@ -1030,7 +1030,7 @@ BEGIN
 END
 ```
 
-#### 11.2.7 `usp_DnsRecords_MarkProvisioned`
+#### 10.2.7 `usp_DnsRecords_MarkProvisioned`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_MarkProvisioned
@@ -1059,7 +1059,7 @@ BEGIN
 END
 ```
 
-#### 11.2.8 `usp_DnsRecords_MarkFailed`
+#### 10.2.8 `usp_DnsRecords_MarkFailed`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_MarkFailed
@@ -1078,7 +1078,7 @@ BEGIN
 END
 ```
 
-#### 11.2.9 `usp_DnsRecords_Revoke`
+#### 10.2.9 `usp_DnsRecords_Revoke`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_DnsRecords_Revoke
@@ -1255,9 +1255,9 @@ END
 
 ---
 
-## 10. N8N — Cuentas aprovisionadas para usuarios
+## 11. N8N — Cuentas aprovisionadas para usuarios
 
-### 10.1 Tabla
+### 11.1 Tabla
 
 ```sql
 CREATE TABLE dbo.N8nAccounts (
@@ -1288,9 +1288,9 @@ CREATE INDEX IX_N8nAccounts_UserId ON dbo.N8nAccounts (UserId);
 CREATE INDEX IX_N8nAccounts_Status ON dbo.N8nAccounts (Status);
 ```
 
-### 10.2 Stored Procedures
+### 11.2 Stored Procedures
 
-#### 10.2.1 `usp_N8nAccounts_GetAllByUserId`
+#### 11.2.1 `usp_N8nAccounts_GetAllByUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAllByUserId
@@ -1309,7 +1309,7 @@ BEGIN
 END
 ```
 
-#### 10.2.2 `usp_N8nAccounts_GetAll`
+#### 11.2.2 `usp_N8nAccounts_GetAll`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAll
@@ -1326,7 +1326,7 @@ BEGIN
 END
 ```
 
-#### 10.2.3 `usp_N8nAccounts_GetById`
+#### 11.2.3 `usp_N8nAccounts_GetById`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetById
@@ -1344,7 +1344,7 @@ BEGIN
 END
 ```
 
-#### 10.2.4 `usp_N8nAccounts_GetByExternalUserRef`
+#### 11.2.4 `usp_N8nAccounts_GetByExternalUserRef`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetByExternalUserRef
@@ -1362,7 +1362,7 @@ BEGIN
 END
 ```
 
-#### 10.2.5 `usp_N8nAccounts_GetActiveByUserId`
+#### 11.2.5 `usp_N8nAccounts_GetActiveByUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetActiveByUserId
@@ -1383,7 +1383,7 @@ BEGIN
 END
 ```
 
-#### 10.2.6 `usp_N8nAccounts_Create`
+#### 11.2.6 `usp_N8nAccounts_Create`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Create
@@ -1415,7 +1415,7 @@ BEGIN
 END
 ```
 
-#### 10.2.7 `usp_N8nAccounts_MarkProvisioned`
+#### 11.2.7 `usp_N8nAccounts_MarkProvisioned`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkProvisioned
@@ -1446,7 +1446,7 @@ BEGIN
 END
 ```
 
-#### 10.2.8 `usp_N8nAccounts_MarkFailed`
+#### 11.2.8 `usp_N8nAccounts_MarkFailed`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkFailed
@@ -1468,7 +1468,7 @@ BEGIN
 END
 ```
 
-#### 10.2.9 `usp_N8nAccounts_Revoke`
+#### 11.2.9 `usp_N8nAccounts_Revoke`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Revoke
