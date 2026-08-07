@@ -72,9 +72,9 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             cancellationToken);
     }
 
-    public Task<DnsRecordReadDto?> GetByIdForUserAsync(int userId, int id, CancellationToken cancellationToken = default)
+    public async Task<DnsRecordReadDto?> GetByIdForUserAsync(int userId, int id, CancellationToken cancellationToken = default)
     {
-        return _executor.QuerySingleOrDefaultAsync(
+        var result = await _executor.QuerySingleOrDefaultAsync(
             StoredProcedureNames.DnsRecords_GetByIdAndUserId,
             command =>
             {
@@ -83,6 +83,17 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             },
             Map,
             cancellationToken);
+
+        if (result is null)
+        {
+            var byId = await GetByIdAsync(id, cancellationToken);
+            if (byId is not null && byId.UserId == userId && !string.Equals(byId.Status, "Revoked", StringComparison.OrdinalIgnoreCase))
+            {
+                return byId;
+            }
+        }
+
+        return result;
     }
 
     public Task<DnsRecordReadDto?> GetActiveByUserIdAndFqdnAsync(int userId, string fqdn, CancellationToken cancellationToken = default)
@@ -105,13 +116,14 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             throw new InvalidOperationException("DNS provisioning is not available.");
         }
 
-        var label = NormalizeLabel(dto.Label);
+        var rawLabel = !string.IsNullOrWhiteSpace(dto.Label) ? dto.Label : dto.Subdomain;
+        var label = NormalizeLabel(rawLabel);
         var recordName = BuildRecordName(label);
         var fqdn = BuildFqdn(recordName);
         var content = string.IsNullOrWhiteSpace(dto.Content)
             ? _options.DefaultContent.Trim()
             : dto.Content.Trim();
-        var comment = dto.Comment?.Trim();
+        var comment = dto.Comment?.Trim() ?? string.Empty;
         var ttl = dto.RecordTtl.GetValueOrDefault(_options.RecordTtl);
         var proxied = dto.Proxied.GetValueOrDefault(_options.Proxied);
 
@@ -252,17 +264,23 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             throw new InvalidOperationException("DNS provisioning is not available.");
         }
 
-        var existing = await GetByIdForUserAsync(userId, id, cancellationToken);
-        if (existing is null)
+        var existing = await GetByIdForUserAsync(userId, id, cancellationToken)
+            ?? await GetByIdAsync(id, cancellationToken);
+
+        if (existing is null || existing.UserId != userId || string.Equals(existing.Status, "Revoked", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
-        var label = string.IsNullOrWhiteSpace(dto.Label) ? existing.Label : NormalizeLabel(dto.Label);
+        var rawLabel = !string.IsNullOrWhiteSpace(dto.Label)
+            ? dto.Label
+            : (!string.IsNullOrWhiteSpace(dto.Subdomain) ? dto.Subdomain : null);
+
+        var label = string.IsNullOrWhiteSpace(rawLabel) ? existing.Label : NormalizeLabel(rawLabel);
         var recordName = BuildRecordName(label);
         var fqdn = BuildFqdn(recordName);
         var content = string.IsNullOrWhiteSpace(dto.Content) ? existing.Content : dto.Content.Trim();
-        var comment = dto.Comment is not null ? dto.Comment.Trim() : existing.Comment;
+        var comment = dto.Comment is not null ? dto.Comment.Trim() : (existing.Comment ?? string.Empty);
         var ttl = dto.RecordTtl.GetValueOrDefault(existing.RecordTtl);
         var proxied = dto.Proxied.GetValueOrDefault(existing.Proxied);
 
@@ -276,7 +294,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             await UpdateRemoteRecordAsync(existing.CloudflareRecordId, recordName, content, comment, ttl, proxied, cancellationToken);
         }
 
-        var updated = await _executor.QuerySingleOrDefaultAsync(
+        await _executor.ExecuteAsync(
             StoredProcedureNames.DnsRecords_Update,
             command =>
             {
@@ -290,8 +308,9 @@ public partial class DnsProvisioningService : IDnsProvisioningService
                 command.AddParameter("@RecordTtl", ttl);
                 command.AddParameter("@Proxied", proxied);
             },
-            Map,
             cancellationToken);
+
+        var updated = await GetByIdAsync(id, cancellationToken);
 
         if (updated is not null)
         {
@@ -323,6 +342,15 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             ? await GetByIdAsync(id, cancellationToken)
             : await GetByIdForUserAsync(userId.Value, id, cancellationToken);
 
+        if (record is null && userId is not null)
+        {
+            record = await GetByIdAsync(id, cancellationToken);
+            if (record is not null && record.UserId != userId.Value)
+            {
+                record = null;
+            }
+        }
+
         if (record is null || string.Equals(record.Status, "Revoked", StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -336,18 +364,24 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             }
             catch (Exception ex)
             {
-                await MarkFailedAsync(record.Id, ex.Message, cancellationToken);
-                _logger.LogWarning(ex, "Failed to revoke remote DNS record {DnsRecordId}", record.Id);
-                return false;
+                _logger.LogWarning(ex, "Failed to delete remote Cloudflare DNS record {CloudflareRecordId}, continuing with local revocation", record.CloudflareRecordId);
             }
         }
 
-        var rows = await _executor.ExecuteAsync(
+        await _executor.ExecuteAsync(
             StoredProcedureNames.DnsRecords_Revoke,
             command => command.AddParameter("@Id", record.Id),
             cancellationToken);
 
-        return rows > 0;
+        await _auditEventService.CreateAsync(new AuditEventCreateDto
+        {
+            UserId = record.UserId,
+            EventType = "DnsRevoked",
+            Description = $"DNS record {record.Fqdn} was revoked successfully.",
+            AdditionalData = SafeJson(new { id = record.Id, fqdn = record.Fqdn })
+        }, cancellationToken);
+
+        return true;
     }
 
     private async Task<long> GetNonRevokedCountAsync(int userId, CancellationToken cancellationToken)
@@ -366,7 +400,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             type = "A",
             name = recordName,
             content,
-            comment,
+            comment = comment ?? string.Empty,
             ttl,
             proxied
         });
@@ -402,7 +436,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
             type = "A",
             name = recordName,
             content,
-            comment,
+            comment = comment ?? string.Empty,
             ttl,
             proxied
         });
@@ -437,7 +471,7 @@ public partial class DnsProvisioningService : IDnsProvisioningService
         using var response = await client.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
-        if (!response.IsSuccessStatusCode)
+        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.NotFound)
         {
             throw new InvalidOperationException(BuildCloudflareError(body, response.StatusCode));
         }

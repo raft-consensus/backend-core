@@ -2,12 +2,18 @@ namespace raft_backend.DTOs;
 
 public class DnsRecordCreateDto
 {
-    public string Label { get; set; } = string.Empty;
+    private string _label = string.Empty;
+
+    public string Label
+    {
+        get => _label;
+        set => _label = value;
+    }
 
     public string Subdomain
     {
-        get => Label;
-        set => Label = value;
+        get => _label;
+        set => _label = value;
     }
 
     public string? Content { get; set; }
@@ -18,12 +24,18 @@ public class DnsRecordCreateDto
 
 public class DnsRecordUpdateDto
 {
-    public string? Label { get; set; }
+    private string? _label;
+
+    public string? Label
+    {
+        get => _label;
+        set => _label = value;
+    }
 
     public string? Subdomain
     {
-        get => Label;
-        set => Label = value;
+        get => _label;
+        set => _label = value;
     }
 
     public string? Content { get; set; }
@@ -58,5 +70,5 @@ public class DnsRecordReadDto
 public class DnsProvisioningResultDto
 {
     public bool Created { get; set; }
-    public DnsRecordReadDto Record { get; set; } = new();
+    public DnsRecordReadDto Record { get; set; } = default!;
 }

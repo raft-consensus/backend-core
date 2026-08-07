@@ -33,11 +33,18 @@ BEGIN
 END
 GO
 
--- Agregar columna Comment si la tabla ya existía previamente sin ella
+-- Asegurar columnas si la tabla ya existía
 IF EXISTS (SELECT * FROM sys.tables WHERE name = 'DnsRecords' AND schema_id = SCHEMA_ID('dbo'))
    AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.DnsRecords') AND name = 'Comment')
 BEGIN
     ALTER TABLE [dbo].[DnsRecords] ADD [Comment] NVARCHAR(500) NULL;
+END
+GO
+
+IF EXISTS (SELECT * FROM sys.tables WHERE name = 'DnsRecords' AND schema_id = SCHEMA_ID('dbo'))
+   AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.DnsRecords') AND name = 'CreatedAt')
+BEGIN
+    ALTER TABLE [dbo].[DnsRecords] ADD [CreatedAt] DATETIME2 NOT NULL CONSTRAINT DF_DnsRecords_CreatedAt DEFAULT (GETUTCDATE());
 END
 GO
 
@@ -148,14 +155,6 @@ BEGIN
         [Proxied] = ISNULL(@Proxied, 0),
         [UpdatedAt] = GETUTCDATE()
     WHERE [Id] = @Id AND [UserId] = @UserId AND [Status] <> 'Revoked';
-
-    SELECT 
-        [Id], [UserId], [Label], [RecordName], [Fqdn], [RecordType],
-        [Content], [Comment], [RecordTtl], [Proxied], [CloudflareZoneId],
-        [CloudflareRecordId], [Status], [LastError], [CreatedAt],
-        [UpdatedAt], [RevokedAt]
-    FROM [dbo].[DnsRecords]
-    WHERE [Id] = @Id AND [UserId] = @UserId;
 END
 GO
 
