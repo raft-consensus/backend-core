@@ -29,6 +29,8 @@ public class UserReadDto
     public string Provider { get; set; } = string.Empty;
     public string ProviderUserId { get; set; } = string.Empty;
     public string Role { get; set; } = "User";
+    public bool HasLocalPassword { get; set; }
+    public bool PasswordChangeRequired { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public DateTime? DeletedAt { get; set; }

@@ -88,6 +88,8 @@ public class UserService : IUserService
             Provider = reader.GetStringOrEmpty("Provider"),
             ProviderUserId = reader.GetStringOrEmpty("ProviderUserId"),
             Role = reader.GetStringOrEmpty("Role"),
+            HasLocalPassword = reader.GetBooleanValue("HasLocalPassword"),
+            PasswordChangeRequired = reader.GetBooleanValue("PasswordChangeRequired"),
             CreatedAt = reader.GetDateTimeValue("CreatedAt"),
             UpdatedAt = reader.GetNullableDateTime("UpdatedAt"),
             DeletedAt = reader.GetNullableDateTime("DeletedAt"),

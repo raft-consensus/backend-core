@@ -155,6 +155,25 @@ if (error) {
 
 **Qué hacer con el `access_token`:** guardarlo (localStorage/sessionStorage, a definir con el equipo) y mandarlo como `Authorization: Bearer <token>` en el resto de las llamadas — esas sí son `fetch` normales, con CORS habilitado para el origin configurado en `Frontend:Origins` o `Frontend:BaseUrl`.
 
+`hasLocalPassword` viaja en el usuario devuelto por el login OAuth y le dice al frontend si esa misma cuenta también tiene acceso por email/contraseña. Si es `false`, el usuario puede habilitar una contraseña local autenticado en la plataforma con:
+
+```http
+POST /api/auth/local-password
+Authorization: Bearer <jwt>
+Content-Type: application/json
+
+{
+  "password": "NuevaClaveSegura123!"
+}
+```
+
+Ese endpoint solo habilita la contraseña local para una cuenta OAuth que todavía no la tenga. No recupera la contraseña de Google/GitHub; solo activa el acceso local de Raft.
+
+Para el frontend, la regla es:
+
+- `hasLocalPassword = false` => ocultar o deshabilitar recuperar/cambiar contraseña;
+- `hasLocalPassword = true` => permitir esas acciones solo para la cuenta autenticada.
+
 ---
 
 ## 3. Mis bases de datos (autoservicio — requiere JWT)

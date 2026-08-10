@@ -23,6 +23,27 @@ public class LoginDto
     public string Password { get; set; } = string.Empty;
 }
 
+public class RequestTemporaryPasswordDto
+{
+    [Required, EmailAddress, MaxLength(320)]
+    public string Email { get; set; } = string.Empty;
+}
+
+public class ChangePasswordDto
+{
+    [Required, MinLength(8)]
+    public string CurrentPassword { get; set; } = string.Empty;
+
+    [Required, MinLength(8)]
+    public string NewPassword { get; set; } = string.Empty;
+}
+
+public class SetLocalPasswordDto
+{
+    [Required, MinLength(8)]
+    public string Password { get; set; } = string.Empty;
+}
+
 public class AuthResponseDto
 {
     public string AccessToken { get; set; } = string.Empty;

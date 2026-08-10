@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -91,6 +92,77 @@ public class AuthController : ControllerBase
         });
     }
 
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> RequestTemporaryPassword(RequestTemporaryPasswordDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _authService.RequestTemporaryPasswordAsync(dto, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogError(ex, "Temporary password request failed for {Email}", dto.Email);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ServiceResponse<object>
+            {
+                Success = false,
+                Message = "We could not send the temporary password right now. Try again later."
+            });
+        }
+
+        return Ok(new ServiceResponse<object>
+        {
+            Success = true,
+            Message = "If the account is eligible, a temporary password was sent."
+        });
+    }
+
+    [HttpPost("change-password")]
+    [Authorize]
+    public async Task<IActionResult> ChangePassword(ChangePasswordDto dto, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var user = await _authService.ChangePasswordAsync(userId, dto, cancellationToken);
+        if (user is null)
+        {
+            return Conflict(new ServiceResponse<object>
+            {
+                Success = false,
+                Message = "The current password is invalid or the account does not have a local password."
+            });
+        }
+
+        return Ok(new ServiceResponse<UserReadDto>
+        {
+            Success = true,
+            Message = "Password updated successfully.",
+            Data = user
+        });
+    }
+
+    [HttpPost("local-password")]
+    [Authorize]
+    public async Task<IActionResult> SetLocalPassword(SetLocalPasswordDto dto, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var user = await _authService.SetLocalPasswordAsync(userId, dto, cancellationToken);
+        if (user is null)
+        {
+            return Conflict(new ServiceResponse<object>
+            {
+                Success = false,
+                Message = "The account already has a local password or could not be updated."
+            });
+        }
+
+        return Ok(new ServiceResponse<UserReadDto>
+        {
+            Success = true,
+            Message = "Local password enabled successfully.",
+            Data = user
+        });
+    }
+
     // This endpoint is reached via a full browser navigation (OAuth redirect chain), never
     // via fetch/XHR from the SPA — so it must hand off with an HTTP redirect back to the
     // frontend, not a JSON body the frontend could never intercept.
@@ -145,5 +217,13 @@ public class AuthController : ControllerBase
             "github" => AuthSchemes.GitHub,
             _ => null
         };
+    }
+
+    private int GetUserId()
+    {
+        var value = User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? throw new InvalidOperationException("Authenticated principal is missing a user id claim.");
+
+        return int.Parse(value);
     }
 }

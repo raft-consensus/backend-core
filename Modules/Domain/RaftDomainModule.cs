@@ -18,6 +18,7 @@ public static class RaftDomainModule
         builder.Services.AddScoped<IAiApiKeyService, AiApiKeyService>();
         builder.Services.AddScoped<IAiService, AiService>();
         builder.Services.AddScoped<IN8nProvisioningService, N8nProvisioningService>();
+        builder.Services.AddScoped<IAuthRecoveryEmailService, AuthRecoveryEmailService>();
         builder.Services.AddSingleton<ISecurePasswordGenerator, SecurePasswordGenerator>();
         builder.Services.AddSingleton<IApiAvailabilityTracker, ApiAvailabilityTracker>();
         builder.Services.AddHostedService<DatabaseLifecycleBackgroundService>();
