@@ -28,11 +28,53 @@ El `User Id`/`Password` de `ConnectionStrings:RaftDb` en `appsettings.json` debe
 
 ## 1. Tablas
 
+### 1.1 Migración segura para tablas existentes
+
+Si `dbo.Users` ya existe en la base, aplica solo esta migración antes de volver a publicar los stored procedures:
+
+```sql
+IF COL_LENGTH('dbo.Users', 'PasswordHash') IS NULL
+BEGIN
+    ALTER TABLE dbo.Users
+    ADD PasswordHash NVARCHAR(255) NULL;
+END;
+
+IF COL_LENGTH('dbo.Users', 'PasswordUpdated_at') IS NULL
+BEGIN
+    ALTER TABLE dbo.Users
+    ADD PasswordUpdated_at DATETIME2 NULL;
+END;
+
+IF COL_LENGTH('dbo.Users', 'TemporaryPasswordHash') IS NULL
+BEGIN
+    ALTER TABLE dbo.Users
+    ADD TemporaryPasswordHash NVARCHAR(255) NULL;
+END;
+
+IF COL_LENGTH('dbo.Users', 'TemporaryPasswordExpires_at') IS NULL
+BEGIN
+    ALTER TABLE dbo.Users
+    ADD TemporaryPasswordExpires_at DATETIME2 NULL;
+END;
+```
+
+Regla operativa:
+
+- `PasswordHash IS NULL` significa que la cuenta no tiene contraseña local.
+- Si `Provider` es `Google` o `GitHub` y `PasswordHash IS NULL`, las opciones de recuperar o cambiar contraseña deben permanecer deshabilitadas.
+- La contraseña temporal se guarda en `TemporaryPasswordHash` con expiración en `TemporaryPasswordExpires_at`; no reemplaza la contraseña local hasta que el usuario haga el cambio final.
+- El backend solo debe permitir acciones de password cuando la cuenta tenga contraseña local efectiva.
+- `HasLocalPassword` y `PasswordChangeRequired` no se guardan como estado independiente: se derivan de las columnas de contraseña al consultar.
+
 ```sql
 CREATE TABLE Users (
     Id INT IDENTITY(1,1) NOT NULL,
     Name NVARCHAR(200) NOT NULL,
     Email NVARCHAR(320) NOT NULL,
+    PasswordHash NVARCHAR(255) NULL,
+    PasswordUpdated_at DATETIME2 NULL,
+    TemporaryPasswordHash NVARCHAR(255) NULL,
+    TemporaryPasswordExpires_at DATETIME2 NULL,
     AvatarUrl NVARCHAR(2048) NULL,
     Provider NVARCHAR(50) NOT NULL,
     ProviderUserId NVARCHAR(200) NOT NULL,
@@ -43,13 +85,10 @@ CREATE TABLE Users (
     LastLogin DATETIME2 NULL,
     CONSTRAINT PK_Users PRIMARY KEY (Id)
 );
-GO
 
 CREATE UNIQUE INDEX IX_Users_Provider_ProviderUserId ON Users (Provider, ProviderUserId);
-GO
 
 CREATE INDEX IX_Users_Email ON Users (Email);
-GO
 
 CREATE TABLE DatabaseInstances (
     Id INT IDENTITY(1,1) NOT NULL,
@@ -69,10 +108,8 @@ CREATE TABLE DatabaseInstances (
     CONSTRAINT PK_DatabaseInstances PRIMARY KEY (Id),
     CONSTRAINT FK_DatabaseInstances_Users_UserId FOREIGN KEY (UserId) REFERENCES Users (Id)
 );
-GO
 
 CREATE INDEX IX_DatabaseInstances_UserId ON DatabaseInstances (UserId);
-GO
 
 CREATE TABLE AccessCredentials (
     Id INT IDENTITY(1,1) NOT NULL,
@@ -85,10 +122,8 @@ CREATE TABLE AccessCredentials (
     CONSTRAINT FK_AccessCredentials_DatabaseInstances_DatabaseInstanceId FOREIGN KEY (DatabaseInstanceId)
         REFERENCES DatabaseInstances (Id) ON DELETE CASCADE
 );
-GO
 
 CREATE UNIQUE INDEX IX_AccessCredentials_DatabaseInstanceId ON AccessCredentials (DatabaseInstanceId);
-GO
 
 CREATE TABLE AuditEvents (
     Id BIGINT IDENTITY(1,1) NOT NULL,
@@ -102,17 +137,15 @@ CREATE TABLE AuditEvents (
     CONSTRAINT PK_AuditEvents PRIMARY KEY (Id),
     CONSTRAINT FK_AuditEvents_Users_UserId FOREIGN KEY (UserId) REFERENCES Users (Id) ON DELETE SET NULL
 );
-GO
 
 CREATE INDEX IX_AuditEvents_UserId ON AuditEvents (UserId);
-GO
 ```
 
 ---
 
 ## 2. Stored Procedures — Users (admin CRUD)
 
-Usados por `UsersController` (`AdminOnly`). El flujo real de login usa `usp_Users_UpsertFromOAuth` (sección 7), no estos.
+Usados por `UsersController` (`AdminOnly`) para CRUD administrativo. El flujo real de login usa `usp_Users_UpsertFromOAuth` (sección 8); además, en este mismo bloque se documenta el contrato de autenticación local y el enlace de contraseña para cuentas OAuth.
 
 ```sql
 CREATE OR ALTER PROCEDURE usp_Users_GetAll
@@ -121,12 +154,14 @@ BEGIN
     SET NOCOUNT ON;
 
     SELECT Id, Name, Email, AvatarUrl, Provider, ProviderUserId, Role,
+           CASE WHEN PasswordHash IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS HasLocalPassword,
+           CASE WHEN TemporaryPasswordHash IS NOT NULL AND TemporaryPasswordExpires_at > SYSUTCDATETIME()
+                THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS PasswordChangeRequired,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt, Deleted_at AS DeletedAt, LastLogin
     FROM Users
     WHERE Deleted_at IS NULL
     ORDER BY Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_Users_GetById
     @Id INT
@@ -135,11 +170,13 @@ BEGIN
     SET NOCOUNT ON;
 
     SELECT Id, Name, Email, AvatarUrl, Provider, ProviderUserId, Role,
+           CASE WHEN PasswordHash IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS HasLocalPassword,
+           CASE WHEN TemporaryPasswordHash IS NOT NULL AND TemporaryPasswordExpires_at > SYSUTCDATETIME()
+                THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS PasswordChangeRequired,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt, Deleted_at AS DeletedAt, LastLogin
     FROM Users
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_Users_Create
     @Name NVARCHAR(200),
@@ -166,7 +203,6 @@ BEGIN
 
     EXEC usp_Users_GetById @Id = @NewId;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_Users_Update
     @Id INT,
@@ -197,7 +233,6 @@ BEGIN
 
     EXEC usp_Users_GetById @Id = @Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_Users_SoftDelete
     @Id INT
@@ -209,12 +244,249 @@ BEGIN
     SET Deleted_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
+
+```
+
+## 3. Stored Procedures — autenticación local y password vinculado
+
+Este bloque cubre tres cosas:
+
+- alta de cuenta con contraseña local;
+- enlace inicial de contraseña local para cuentas OAuth que sí habilitan password;
+- flujo de recuperación con contraseña temporal y cambio final.
+
+Reglas:
+
+- las cuentas OAuth sin contraseña local siguen sin poder usar recuperar/cambiar contraseña;
+- `PasswordChangeRequired` se deriva de una contraseña temporal activa;
+- `usp_Users_SetTemporaryPassword` solo funciona si la cuenta ya tiene contraseña local;
+- `usp_Users_ChangeLocalPassword` limpia la contraseña temporal al cerrar el cambio.
+- el backend genera la contraseña temporal y la envía por N8N; la base solo persiste el hash y la expiración;
+- el SP no valida la contraseña actual: esa verificación ocurre en el backend antes de llamar al cambio.
+
+Contrato funcional expuesto por el backend:
+
+- `POST /api/auth/forgot-password`:
+  - busca la cuenta por email;
+  - rechaza la operación si no tiene contraseña local;
+  - genera una contraseña temporal segura;
+  - guarda hash + expiración;
+  - la envía por N8N.
+- `POST /api/auth/change-password`:
+  - requiere sesión autenticada;
+  - valida la contraseña actual contra la local o la temporal vigente;
+  - actualiza la contraseña definitiva;
+  - limpia la temporal.
+- `POST /api/auth/local-password`:
+  - habilita contraseña local en una cuenta que todavía no la tiene.
+
+```sql
+CREATE OR ALTER PROCEDURE usp_Users_RegisterWithPassword
+    @Name NVARCHAR(200),
+    @Email NVARCHAR(320),
+    @PasswordHash NVARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF EXISTS (SELECT 1 FROM Users WHERE Email = @Email AND Deleted_at IS NULL)
+    BEGIN
+        RETURN;
+    END
+
+    DECLARE @NewId INT;
+
+    INSERT INTO Users
+        (Name, Email, PasswordHash, PasswordUpdated_at, TemporaryPasswordHash, TemporaryPasswordExpires_at, AvatarUrl, Provider, ProviderUserId, Role, Created_at, LastLogin)
+    VALUES
+        (@Name, @Email, @PasswordHash, SYSUTCDATETIME(), NULL, NULL, NULL, 'Password', @Email, 'User', SYSUTCDATETIME(), SYSUTCDATETIME());
+
+    SET @NewId = SCOPE_IDENTITY();
+
+    EXEC usp_Users_GetById @Id = @NewId;
+END
+
+CREATE OR ALTER PROCEDURE usp_Users_GetByEmailForLogin
+    @Email NVARCHAR(320)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, Name, Email, PasswordHash, TemporaryPasswordHash,
+           AvatarUrl, Provider, ProviderUserId, Role,
+           CASE WHEN PasswordHash IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS HasLocalPassword,
+           CASE WHEN TemporaryPasswordHash IS NOT NULL AND TemporaryPasswordExpires_at > SYSUTCDATETIME()
+                THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS PasswordChangeRequired,
+           TemporaryPasswordExpires_at AS TemporaryPasswordExpiresAt,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Deleted_at AS DeletedAt, LastLogin
+    FROM Users
+    WHERE Email = @Email
+      AND Deleted_at IS NULL;
+END
+
+CREATE OR ALTER PROCEDURE usp_Users_GetPasswordStateById
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, Name, Email, PasswordHash, TemporaryPasswordHash,
+           AvatarUrl, Provider, ProviderUserId, Role,
+           CASE WHEN PasswordHash IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS HasLocalPassword,
+           CASE WHEN TemporaryPasswordHash IS NOT NULL AND TemporaryPasswordExpires_at > SYSUTCDATETIME()
+                THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS PasswordChangeRequired,
+           TemporaryPasswordExpires_at AS TemporaryPasswordExpiresAt,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Deleted_at AS DeletedAt, LastLogin
+    FROM Users
+    WHERE Id = @UserId
+      AND Deleted_at IS NULL;
+END
+
+CREATE OR ALTER PROCEDURE usp_Users_SetLocalPassword
+    @UserId INT,
+    @PasswordHash NVARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Updated TABLE
+    (
+        Id INT NOT NULL
+    );
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        UPDATE Users
+        SET PasswordHash = @PasswordHash,
+            PasswordUpdated_at = SYSUTCDATETIME(),
+            TemporaryPasswordHash = NULL,
+            TemporaryPasswordExpires_at = NULL,
+            Updated_at = SYSUTCDATETIME()
+        OUTPUT inserted.Id INTO @Updated (Id)
+        WHERE Id = @UserId
+          AND Deleted_at IS NULL
+          AND PasswordHash IS NULL;
+
+        IF NOT EXISTS (SELECT 1 FROM @Updated)
+        BEGIN
+            ROLLBACK TRAN;
+            RETURN;
+        END
+
+        INSERT INTO AuditEvents (UserId, EventType, Description, Created_at)
+        VALUES (@UserId, 'LocalPasswordLinked', 'User enabled a local password for this account.', SYSUTCDATETIME());
+
+        COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRAN;
+        THROW;
+    END CATCH
+
+    EXEC usp_Users_GetById @Id = @UserId;
+END
+
+CREATE OR ALTER PROCEDURE usp_Users_SetTemporaryPassword
+    @UserId INT,
+    @TemporaryPasswordHash NVARCHAR(255),
+    @TemporaryPasswordExpiresAt DATETIME2
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Updated TABLE
+    (
+        Id INT NOT NULL
+    );
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        UPDATE Users
+        SET TemporaryPasswordHash = @TemporaryPasswordHash,
+            TemporaryPasswordExpires_at = @TemporaryPasswordExpiresAt,
+            Updated_at = SYSUTCDATETIME()
+        OUTPUT inserted.Id INTO @Updated (Id)
+        WHERE Id = @UserId
+          AND Deleted_at IS NULL
+          AND PasswordHash IS NOT NULL;
+
+        IF NOT EXISTS (SELECT 1 FROM @Updated)
+        BEGIN
+            ROLLBACK TRAN;
+            RETURN;
+        END
+
+        INSERT INTO AuditEvents (UserId, EventType, Description, Created_at)
+        VALUES (@UserId, 'TemporaryPasswordRequested', 'User requested a temporary password.', SYSUTCDATETIME());
+
+        COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRAN;
+        THROW;
+    END CATCH
+
+    EXEC usp_Users_GetById @Id = @UserId;
+END
+
+CREATE OR ALTER PROCEDURE usp_Users_ChangeLocalPassword
+    @UserId INT,
+    @PasswordHash NVARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Updated TABLE
+    (
+        Id INT NOT NULL
+    );
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        UPDATE Users
+        SET PasswordHash = @PasswordHash,
+            PasswordUpdated_at = SYSUTCDATETIME(),
+            TemporaryPasswordHash = NULL,
+            TemporaryPasswordExpires_at = NULL,
+            Updated_at = SYSUTCDATETIME()
+        OUTPUT inserted.Id INTO @Updated (Id)
+        WHERE Id = @UserId
+          AND Deleted_at IS NULL
+          AND PasswordHash IS NOT NULL;
+
+        IF NOT EXISTS (SELECT 1 FROM @Updated)
+        BEGIN
+            ROLLBACK TRAN;
+            RETURN;
+        END
+
+        INSERT INTO AuditEvents (UserId, EventType, Description, Created_at)
+        VALUES (@UserId, 'PasswordChanged', 'User changed their local password.', SYSUTCDATETIME());
+
+        COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRAN;
+        THROW;
+    END CATCH
+
+    EXEC usp_Users_GetById @Id = @UserId;
+END
 ```
 
 ---
 
-## 3. Stored Procedures — DatabaseInstances (admin CRUD)
+## 4. Stored Procedures — DatabaseInstances (admin CRUD)
 
 ```sql
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetAll
@@ -229,7 +501,6 @@ BEGIN
     WHERE Deleted_at IS NULL
     ORDER BY Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetById
     @Id INT
@@ -243,7 +514,6 @@ BEGIN
     FROM DatabaseInstances
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_Create
     @UserId INT,
@@ -273,7 +543,6 @@ BEGIN
 
     EXEC usp_DatabaseInstances_GetById @Id = @NewId;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_Update
     @Id INT,
@@ -312,7 +581,6 @@ BEGIN
 
     EXEC usp_DatabaseInstances_GetById @Id = @Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_SoftDelete
     @Id INT
@@ -328,14 +596,13 @@ BEGIN
     SET Deleted_at = SYSUTCDATETIME()
     WHERE DatabaseInstanceId = @Id AND Deleted_at IS NULL;
 END
-GO
 ```
 
 ---
 
-## 4. Stored Procedures — AccessCredentials (admin CRUD)
+## 5. Stored Procedures — AccessCredentials (admin CRUD)
 
-Nunca devuelven `EncryptedPassword`. Leer la contraseña descifrada es un camino aparte, con verificación de dueño (sección 7).
+Nunca devuelven `EncryptedPassword`. Leer la contraseña descifrada es un camino aparte, con verificación de dueño (sección 8).
 
 ```sql
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_GetAll
@@ -349,7 +616,6 @@ BEGIN
     WHERE Deleted_at IS NULL
     ORDER BY Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_GetById
     @Id INT
@@ -362,7 +628,6 @@ BEGIN
     FROM AccessCredentials
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_GetByDatabaseInstanceId
     @DatabaseInstanceId INT
@@ -375,7 +640,6 @@ BEGIN
     FROM AccessCredentials
     WHERE DatabaseInstanceId = @DatabaseInstanceId AND Deleted_at IS NULL;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_Create
     @DatabaseInstanceId INT,
@@ -393,7 +657,6 @@ BEGIN
 
     EXEC usp_AccessCredentials_GetById @Id = @NewId;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_Update
     @Id INT,
@@ -414,7 +677,6 @@ BEGIN
 
     EXEC usp_AccessCredentials_GetById @Id = @Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AccessCredentials_SoftDelete
     @Id INT
@@ -426,12 +688,11 @@ BEGIN
     SET Deleted_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 ```
 
 ---
 
-## 5. Stored Procedures — AuditEvents
+## 6. Stored Procedures — AuditEvents
 
 ```sql
 CREATE OR ALTER PROCEDURE usp_AuditEvents_GetAll
@@ -445,7 +706,6 @@ BEGIN
     WHERE Deleted_at IS NULL
     ORDER BY Id DESC;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AuditEvents_GetById
     @Id BIGINT
@@ -458,7 +718,6 @@ BEGIN
     FROM AuditEvents
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AuditEvents_Create
     @UserId INT = NULL,
@@ -479,7 +738,6 @@ BEGIN
 
     EXEC usp_AuditEvents_GetById @Id = @NewId;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AuditEvents_Update
     @Id BIGINT,
@@ -507,7 +765,6 @@ BEGIN
 
     EXEC usp_AuditEvents_GetById @Id = @Id;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_AuditEvents_SoftDelete
     @Id BIGINT
@@ -519,12 +776,11 @@ BEGIN
     SET Deleted_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 ```
 
 ---
 
-## 6. Views y métricas (landing page + dashboard)
+## 7. Views y métricas (landing page + dashboard)
 
 `ServiceAvailability` queda fija en `100.0` hasta que se integre monitoreo real — es una limitación conocida, no un bug.
 
@@ -538,7 +794,6 @@ SELECT
     (SELECT COUNT(*) FROM AuditEvents WHERE Deleted_at IS NULL AND EventType = 'Login') AS TotalLogins,
     (SELECT COUNT(*) FROM Users WHERE Deleted_at IS NULL AND LastLogin >= DATEADD(DAY, -30, SYSUTCDATETIME())) AS ActiveUsers,
     CAST(100.0 AS DECIMAL(5, 2)) AS ServiceAvailability;
-GO
 
 CREATE OR ALTER PROCEDURE usp_PlatformMetrics_Get
 AS
@@ -548,7 +803,6 @@ BEGIN
     SELECT TotalUsers, TotalDatabases, ActiveDatabases, TotalLogins, ActiveUsers, ServiceAvailability
     FROM vw_PlatformMetrics;
 END
-GO
 
 CREATE OR ALTER VIEW vw_UserDashboard
 AS
@@ -567,7 +821,6 @@ SELECT
     di.Created_at AS CreatedAt
 FROM DatabaseInstances di
 WHERE di.Deleted_at IS NULL;
-GO
 
 CREATE OR ALTER PROCEDURE usp_UserDashboard_GetByUserId
     @UserId INT
@@ -581,12 +834,11 @@ BEGIN
     WHERE UserId = @UserId
     ORDER BY DatabaseInstanceId;
 END
-GO
 ```
 
 ---
 
-## 7. Autenticación y aprovisionamiento (el flujo real de negocio)
+## 8. Autenticación y aprovisionamiento (el flujo real de negocio)
 
 `usp_Users_UpsertFromOAuth` es el único punto de entrada del login: decide crear o actualizar el usuario, evita duplicados por `(Provider, ProviderUserId)`, y registra el audit event de login — todo dentro de la misma transacción. `Role` nunca se toca en un usuario existente, para que no se pueda escalar privilegios vía claims de OAuth.
 
@@ -647,12 +899,14 @@ BEGIN
     END CATCH
 
     SELECT Id, Name, Email, AvatarUrl, Provider, ProviderUserId, Role,
+           CASE WHEN PasswordHash IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS HasLocalPassword,
+           CASE WHEN TemporaryPasswordHash IS NOT NULL AND TemporaryPasswordExpires_at > SYSUTCDATETIME()
+                THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS PasswordChangeRequired,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt, Deleted_at AS DeletedAt, LastLogin,
            @IsNewUser AS IsNewUser
     FROM Users
     WHERE Id = @UserId;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_Users_GetSharedSqlServerProvisioningState
     @UserId INT
@@ -678,7 +932,6 @@ BEGIN
             ORDER BY di.Id
         );
 END
-GO
 
 -- Solo devuelve la fila si @DatabaseInstanceId realmente pertenece a @UserId.
 -- La verificación de dueño vive aquí, no en C#.
@@ -697,12 +950,11 @@ BEGIN
       AND ac.Deleted_at IS NULL
       AND di.Deleted_at IS NULL;
 END
-GO
 ```
 
 ---
 
-## 8. Ciclo de vida (TTL y cuota de almacenamiento)
+## 9. Ciclo de vida (TTL y cuota de almacenamiento)
 
 Usados por el `BackgroundService` del backend (pausa a los 7 días de inactividad, elimina a los 30, recalcula espacio usado). La decisión de "quién" está vencido vive aquí; el backend solo ejecuta la acción mecánica en MySQL y llama a estos SPs para reflejarla.
 
@@ -719,7 +971,6 @@ BEGIN
         Updated_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 -- Cae en Created_at cuando la instancia nunca tuvo actividad, para que también expire.
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForPause
@@ -734,7 +985,6 @@ BEGIN
       AND Status = 'Active'
       AND COALESCE(LastActivity, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
 END
-GO
 
 -- Cubre 'Active' y 'Suspended': si el job se cayó y se saltó la pausa, igual elimina al vencer.
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForDelete
@@ -749,7 +999,6 @@ BEGIN
       AND Status IN ('Active', 'Suspended')
       AND COALESCE(LastActivity, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetSharedLoginCleanupState
     @UserId INT
@@ -766,7 +1015,6 @@ BEGIN
               AND di.Deleted_at IS NULL
         ) THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END;
 END
-GO
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_UpdateUsedSpace
     @Id INT,
@@ -780,7 +1028,6 @@ BEGIN
         Updated_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 END
-GO
 
 -- DatabaseUser ahora es el login compartido del usuario de plataforma.
 -- Para conservar TTL por instancia, el job mapea la base de datos activa de vuelta a
@@ -795,14 +1042,13 @@ BEGIN
     SET LastActivity = SYSUTCDATETIME()
     WHERE DatabaseName = @DatabaseName AND Deleted_at IS NULL;
 END
-GO
 ```
 
 ---
 
-## 9. IA — API Keys y consumo
+## 10. IA — API Keys y consumo
 
-### 9.1 Tabla
+### 10.1 Tabla
 
 ```sql
 CREATE TABLE dbo.AiApiKeys (
@@ -832,9 +1078,9 @@ CREATE INDEX IX_AiApiKeys_UserId ON dbo.AiApiKeys (UserId);
 CREATE INDEX IX_AiApiKeys_UserId_Status ON dbo.AiApiKeys (UserId, Status);
 ```
 
-### 9.2 Stored Procedures
+### 10.2 Stored Procedures
 
-#### 9.2.1 `usp_AiApiKeys_GetAllByUserId`
+#### 10.2.1 `usp_AiApiKeys_GetAllByUserId`
 
 ```sql
 CREATE PROCEDURE dbo.usp_AiApiKeys_GetAllByUserId
@@ -851,6 +1097,163 @@ BEGIN
     ORDER BY Id DESC;
 END
 ```
+
+#### 10.2.2 `usp_AiApiKeys_GetById`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetById
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE Id = @Id;
+END
+```
+
+#### 10.2.3 `usp_AiApiKeys_GetByIdAndUserId`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetByIdAndUserId
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE Id = @Id
+      AND UserId = @UserId;
+END
+```
+
+#### 10.2.4 `usp_AiApiKeys_GetActiveByKeyHash`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_GetActiveByKeyHash
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id, UserId, Name, KeyPrefix, Status,
+           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
+           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
+    FROM dbo.AiApiKeys
+    WHERE KeyHash = @KeyHash
+      AND Status = 'Active'
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 10.2.5 `usp_AiApiKeys_Create`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Create
+    @UserId INT,
+    @Name NVARCHAR(120),
+    @KeyPrefix NVARCHAR(12),
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT 1 FROM dbo.AiApiKeys WHERE KeyHash = @KeyHash)
+    BEGIN
+        RETURN;
+    END
+
+    INSERT INTO dbo.AiApiKeys (UserId, Name, KeyPrefix, KeyHash, Status, Created_at)
+    VALUES (@UserId, @Name, @KeyPrefix, @KeyHash, 'Active', SYSUTCDATETIME());
+
+    DECLARE @NewId INT = SCOPE_IDENTITY();
+    EXEC dbo.usp_AiApiKeys_GetById @Id = @NewId;
+END
+```
+
+#### 10.2.6 `usp_AiApiKeys_Rotate`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Rotate
+    @Id INT,
+    @UserId INT,
+    @KeyPrefix NVARCHAR(12),
+    @KeyHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET KeyPrefix = @KeyPrefix,
+        KeyHash = @KeyHash,
+        Status = 'Active',
+        Revoked_at = NULL,
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        RETURN;
+    END
+
+    EXEC dbo.usp_AiApiKeys_GetById @Id = @Id;
+END
+```
+
+#### 10.2.7 `usp_AiApiKeys_Revoke`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_Revoke
+    @Id INT,
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET Status = 'Revoked',
+        Revoked_at = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND UserId = @UserId
+      AND Revoked_at IS NULL;
+END
+```
+
+#### 10.2.8 `usp_AiApiKeys_RecordUsage`
+
+```sql
+CREATE PROCEDURE dbo.usp_AiApiKeys_RecordUsage
+    @Id INT,
+    @PromptTokens BIGINT,
+    @CompletionTokens BIGINT,
+    @ApproxCostUsd DECIMAL(18,6)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.AiApiKeys
+    SET TotalRequests = TotalRequests + 1,
+        TotalPromptTokens = TotalPromptTokens + @PromptTokens,
+        TotalCompletionTokens = TotalCompletionTokens + @CompletionTokens,
+        TotalTokens = TotalTokens + (@PromptTokens + @CompletionTokens),
+        ApproxCostUsd = ApproxCostUsd + @ApproxCostUsd,
+        LastUsedAt = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id
+      AND Revoked_at IS NULL;
+END
+```
+
 
 ---
 
@@ -1097,167 +1500,9 @@ BEGIN
 END
 ```
 
-#### 9.2.2 `usp_AiApiKeys_GetById`
+## 12. N8N — Cuentas aprovisionadas para usuarios
 
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_GetById
-    @Id INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT Id, UserId, Name, KeyPrefix, Status,
-           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
-           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
-    FROM dbo.AiApiKeys
-    WHERE Id = @Id;
-END
-```
-
-#### 9.2.3 `usp_AiApiKeys_GetByIdAndUserId`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_GetByIdAndUserId
-    @Id INT,
-    @UserId INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT Id, UserId, Name, KeyPrefix, Status,
-           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
-           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
-    FROM dbo.AiApiKeys
-    WHERE Id = @Id
-      AND UserId = @UserId;
-END
-```
-
-#### 9.2.4 `usp_AiApiKeys_GetActiveByKeyHash`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_GetActiveByKeyHash
-    @KeyHash NVARCHAR(128)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT Id, UserId, Name, KeyPrefix, Status,
-           Created_at AS CreatedAt, Updated_at AS UpdatedAt, Revoked_at AS RevokedAt, LastUsedAt,
-           TotalRequests, TotalPromptTokens, TotalCompletionTokens, TotalTokens, ApproxCostUsd
-    FROM dbo.AiApiKeys
-    WHERE KeyHash = @KeyHash
-      AND Status = 'Active'
-      AND Revoked_at IS NULL;
-END
-```
-
-#### 9.2.5 `usp_AiApiKeys_Create`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_Create
-    @UserId INT,
-    @Name NVARCHAR(120),
-    @KeyPrefix NVARCHAR(12),
-    @KeyHash NVARCHAR(128)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF EXISTS (SELECT 1 FROM dbo.AiApiKeys WHERE KeyHash = @KeyHash)
-    BEGIN
-        RETURN;
-    END
-
-    INSERT INTO dbo.AiApiKeys (UserId, Name, KeyPrefix, KeyHash, Status, Created_at)
-    VALUES (@UserId, @Name, @KeyPrefix, @KeyHash, 'Active', SYSUTCDATETIME());
-
-    DECLARE @NewId INT = SCOPE_IDENTITY();
-    EXEC dbo.usp_AiApiKeys_GetById @Id = @NewId;
-END
-```
-
-#### 9.2.6 `usp_AiApiKeys_Rotate`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_Rotate
-    @Id INT,
-    @UserId INT,
-    @KeyPrefix NVARCHAR(12),
-    @KeyHash NVARCHAR(128)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    UPDATE dbo.AiApiKeys
-    SET KeyPrefix = @KeyPrefix,
-        KeyHash = @KeyHash,
-        Status = 'Active',
-        Revoked_at = NULL,
-        Updated_at = SYSUTCDATETIME()
-    WHERE Id = @Id
-      AND UserId = @UserId
-      AND Revoked_at IS NULL;
-
-    IF @@ROWCOUNT = 0
-    BEGIN
-        RETURN;
-    END
-
-    EXEC dbo.usp_AiApiKeys_GetById @Id = @Id;
-END
-```
-
-#### 9.2.7 `usp_AiApiKeys_Revoke`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_Revoke
-    @Id INT,
-    @UserId INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    UPDATE dbo.AiApiKeys
-    SET Status = 'Revoked',
-        Revoked_at = SYSUTCDATETIME(),
-        Updated_at = SYSUTCDATETIME()
-    WHERE Id = @Id
-      AND UserId = @UserId
-      AND Revoked_at IS NULL;
-END
-```
-
-#### 9.2.8 `usp_AiApiKeys_RecordUsage`
-
-```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_RecordUsage
-    @Id INT,
-    @PromptTokens BIGINT,
-    @CompletionTokens BIGINT,
-    @ApproxCostUsd DECIMAL(18,6)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    UPDATE dbo.AiApiKeys
-    SET TotalRequests = TotalRequests + 1,
-        TotalPromptTokens = TotalPromptTokens + @PromptTokens,
-        TotalCompletionTokens = TotalCompletionTokens + @CompletionTokens,
-        TotalTokens = TotalTokens + (@PromptTokens + @CompletionTokens),
-        ApproxCostUsd = ApproxCostUsd + @ApproxCostUsd,
-        LastUsedAt = SYSUTCDATETIME(),
-        Updated_at = SYSUTCDATETIME()
-    WHERE Id = @Id
-      AND Revoked_at IS NULL;
-END
-```
-
----
-
-## 10. N8N — Cuentas aprovisionadas para usuarios
-
-### 10.1 Tabla
+### 12.1 Tabla
 
 ```sql
 CREATE TABLE dbo.N8nAccounts (
@@ -1288,9 +1533,9 @@ CREATE INDEX IX_N8nAccounts_UserId ON dbo.N8nAccounts (UserId);
 CREATE INDEX IX_N8nAccounts_Status ON dbo.N8nAccounts (Status);
 ```
 
-### 10.2 Stored Procedures
+### 12.2 Stored Procedures
 
-#### 10.2.1 `usp_N8nAccounts_GetAllByUserId`
+#### 12.2.1 `usp_N8nAccounts_GetAllByUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAllByUserId
@@ -1309,7 +1554,7 @@ BEGIN
 END
 ```
 
-#### 10.2.2 `usp_N8nAccounts_GetAll`
+#### 12.2.2 `usp_N8nAccounts_GetAll`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetAll
@@ -1326,7 +1571,7 @@ BEGIN
 END
 ```
 
-#### 10.2.3 `usp_N8nAccounts_GetById`
+#### 12.2.3 `usp_N8nAccounts_GetById`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetById
@@ -1344,7 +1589,7 @@ BEGIN
 END
 ```
 
-#### 10.2.4 `usp_N8nAccounts_GetByExternalUserRef`
+#### 12.2.4 `usp_N8nAccounts_GetByExternalUserRef`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetByExternalUserRef
@@ -1362,7 +1607,7 @@ BEGIN
 END
 ```
 
-#### 10.2.5 `usp_N8nAccounts_GetActiveByUserId`
+#### 12.2.5 `usp_N8nAccounts_GetActiveByUserId`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_GetActiveByUserId
@@ -1383,7 +1628,7 @@ BEGIN
 END
 ```
 
-#### 10.2.6 `usp_N8nAccounts_Create`
+#### 12.2.6 `usp_N8nAccounts_Create`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Create
@@ -1415,7 +1660,7 @@ BEGIN
 END
 ```
 
-#### 10.2.7 `usp_N8nAccounts_MarkProvisioned`
+#### 12.2.7 `usp_N8nAccounts_MarkProvisioned`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkProvisioned
@@ -1446,7 +1691,7 @@ BEGIN
 END
 ```
 
-#### 10.2.8 `usp_N8nAccounts_MarkFailed`
+#### 12.2.8 `usp_N8nAccounts_MarkFailed`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkFailed
@@ -1468,7 +1713,7 @@ BEGIN
 END
 ```
 
-#### 10.2.9 `usp_N8nAccounts_Revoke`
+#### 12.2.9 `usp_N8nAccounts_Revoke`
 
 ```sql
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_Revoke

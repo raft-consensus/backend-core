@@ -283,6 +283,7 @@ Typical response:
 | `GET` | `/api/auth/login/github` | Public | Starts OAuth with GitHub. |
 | `GET` | `/api/auth/callback/google` | Public | Completes Google login and returns a JWT. |
 | `GET` | `/api/auth/callback/github` | Public | Completes GitHub login and returns a JWT. |
+| `POST` | `/api/auth/local-password` | JWT | Enables a local password for the authenticated OAuth account if it doesn't already have one. |
 
 Example response:
 
@@ -302,6 +303,7 @@ Example response:
       "avatarUrl": "https://...",
       "provider": "Google",
       "providerUserId": "google-sub-123",
+      "hasLocalPassword": false,
       "createdAt": "2026-07-17T14:00:00Z",
       "updatedAt": null,
       "deletedAt": null,
@@ -349,6 +351,9 @@ Expected SPs by convention:
 - `usp_Users_Update`
 - `usp_Users_SoftDelete`
 - `usp_Users_UpsertFromOAuth`
+- `usp_Users_RegisterWithPassword`
+- `usp_Users_GetByEmailForLogin`
+- `usp_Users_SetLocalPassword`
 - `usp_DatabaseInstances_GetAll`
 - `usp_DatabaseInstances_GetById`
 - `usp_DatabaseInstances_Create`

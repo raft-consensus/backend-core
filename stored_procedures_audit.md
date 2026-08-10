@@ -3,7 +3,7 @@
 > **Fecha de Auditoría:** 2026-08-04  
 > **Servidor BD:** `49.13.85.216` (Base de Datos: `RaftDb`)  
 > **Backend Framework:** .NET 10 Web API (`raft-backend.csproj`), organizado como monolito modular bajo `Modules/`  
-> **Total Procedimientos Analizados:** 44 SPs
+> **Total Procedimientos Analizados:** 45 SPs
 
 ---
 
@@ -66,6 +66,7 @@ flowchart TD
 | 6 | `usp_Users_RegisterWithPassword` | `AuthService.RegisterWithPasswordAsync` | `POST /api/auth/register` | 🟢 **Activo (Self-Service)** | Inserta un usuario local recibiendo su correo y el hash BCrypt de la contraseña. | El hash es generado en C# con `BCrypt.Net-Next`. No crea bases de datos automáticamente. |
 | 7 | `usp_Users_GetByEmailForLogin` | `AuthService.LoginWithPasswordAsync` | `POST /api/auth/login` | 🟢 **Activo (Self-Service)** | Busca el usuario activo correspondiente a un email para el login por contraseña. | Devuelve el hash almacenado para que el backend verifique la clave y emita el JWT. |
 | 8 | `usp_Users_UpsertFromOAuth` | `AuthService.CompleteExternalLoginAsync` | `GET /api/auth/external-callback` | 🟢 **Activo (Self-Service)** | Registra un nuevo usuario de GitHub/Google o actualiza su perfil si ya existía. | Unicidad por `Provider` + `ProviderUserId`. Asigna rol 'Estudiante' por defecto. |
+| 9 | `usp_Users_SetLocalPassword` | `AuthService.SetLocalPasswordAsync` | `POST /api/auth/local-password` | 🟢 **Activo (Self-Service OAuth)** | Vincula una contraseña local a una cuenta OAuth existente cuando todavía no tenía `PasswordHash`. | No modifica `Provider` ni `ProviderUserId`; solo habilita login local para la misma identidad. |
 
 ---
 

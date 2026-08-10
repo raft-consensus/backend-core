@@ -10,6 +10,10 @@ public static class StoredProcedureNames
     public const string Users_UpsertFromOAuth = "usp_Users_UpsertFromOAuth";
     public const string Users_RegisterWithPassword = "usp_Users_RegisterWithPassword";
     public const string Users_GetByEmailForLogin = "usp_Users_GetByEmailForLogin";
+    public const string Users_GetPasswordStateById = "usp_Users_GetPasswordStateById";
+    public const string Users_SetLocalPassword = "usp_Users_SetLocalPassword";
+    public const string Users_SetTemporaryPassword = "usp_Users_SetTemporaryPassword";
+    public const string Users_ChangeLocalPassword = "usp_Users_ChangeLocalPassword";
     public const string Users_GetSharedSqlServerProvisioningState = "usp_Users_GetSharedSqlServerProvisioningState";
 
     public const string DatabaseInstances_GetAll = "usp_DatabaseInstances_GetAll";
