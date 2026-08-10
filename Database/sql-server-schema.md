@@ -655,7 +655,8 @@ END
 GO
 
 CREATE OR ALTER PROCEDURE usp_Users_GetSharedSqlServerProvisioningState
-    @UserId INT
+    @UserId INT,
+    @Engine NVARCHAR(50) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -666,6 +667,7 @@ BEGIN
             SELECT 1
             FROM DatabaseInstances di
             WHERE di.UserId = @UserId
+              AND (@Engine IS NULL OR di.Engine = @Engine)
               AND di.Deleted_at IS NULL
         ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END,
         EncryptedPassword = (
@@ -673,6 +675,7 @@ BEGIN
             FROM AccessCredentials ac
             INNER JOIN DatabaseInstances di ON di.Id = ac.DatabaseInstanceId
             WHERE di.UserId = @UserId
+              AND (@Engine IS NULL OR di.Engine = @Engine)
               AND di.Deleted_at IS NULL
               AND ac.Deleted_at IS NULL
             ORDER BY di.Id

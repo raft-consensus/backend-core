@@ -145,70 +145,77 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
 
         foreach (var instance in instances)
         {
-            var service = ResolveService(instance.Engine, resolver);
-            if (service is null || !service.IsAvailable)
+            try
             {
-                continue;
-            }
-
-            var usedBytes = await service.GetUsedSpaceBytesAsync(instance.DatabaseName, cancellationToken);
-            var activeConnections = await service.GetActiveConnectionCountAsync(instance.DatabaseName, cancellationToken);
-
-            await sqlExecutor.ExecuteAsync(
-                StoredProcedureNames.DatabaseInstances_UpdateUsedSpace,
-                command =>
+                var service = ResolveService(instance.Engine, resolver);
+                if (service is null || !service.IsAvailable)
                 {
-                    command.AddParameter("@Id", instance.Id);
-                    command.AddParameter("@UsedSpaceBytes", usedBytes);
-                },
-                cancellationToken);
+                    continue;
+                }
 
-            if (activeConnections > 0)
-            {
+                var usedBytes = await service.GetUsedSpaceBytesAsync(instance.DatabaseName, cancellationToken);
+                var activeConnections = await service.GetActiveConnectionCountAsync(instance.DatabaseName, cancellationToken);
+
                 await sqlExecutor.ExecuteAsync(
-                    StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseName,
-                    command => command.AddParameter("@DatabaseName", instance.DatabaseName),
+                    StoredProcedureNames.DatabaseInstances_UpdateUsedSpace,
+                    command =>
+                    {
+                        command.AddParameter("@Id", instance.Id);
+                        command.AddParameter("@UsedSpaceBytes", usedBytes);
+                    },
                     cancellationToken);
-            }
 
-            if (instance.Status != "Active")
-            {
-                continue;
-            }
+                if (activeConnections > 0)
+                {
+                    await sqlExecutor.ExecuteAsync(
+                        StoredProcedureNames.DatabaseInstances_TouchActivityByDatabaseName,
+                        command => command.AddParameter("@DatabaseName", instance.DatabaseName),
+                        cancellationToken);
+                }
 
-            if (usedBytes > instance.MaxSpaceBytes)
-            {
-                try
+                if (instance.Status != "Active")
                 {
-                    await service.PauseAsync(instance.Id, cancellationToken);
-                    await auditEventService.CreateAsync(new AuditEventCreateDto
-                    {
-                        UserId = instance.UserId,
-                        EventType = "DatabasePausedForQuota",
-                        Description = $"Database instance {instance.Id} was paused automatically because it exceeded its storage quota."
-                    }, cancellationToken);
+                    continue;
                 }
-                catch (Exception ex)
+
+                if (usedBytes > instance.MaxSpaceBytes)
                 {
-                    _logger.LogError(ex, "Failed to lock over-quota database instance {Id}", instance.Id);
+                    try
+                    {
+                        await service.PauseAsync(instance.Id, cancellationToken);
+                        await auditEventService.CreateAsync(new AuditEventCreateDto
+                        {
+                            UserId = instance.UserId,
+                            EventType = "DatabasePausedForQuota",
+                            Description = $"Database instance {instance.Id} was paused automatically because it exceeded its storage quota."
+                        }, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to lock over-quota database instance {Id}", instance.Id);
+                    }
+                }
+                else if (activeConnections > _options.MaxConcurrentConnectionsPerDatabase)
+                {
+                    try
+                    {
+                        await service.PauseAsync(instance.Id, cancellationToken);
+                        await auditEventService.CreateAsync(new AuditEventCreateDto
+                        {
+                            UserId = instance.UserId,
+                            EventType = "DatabasePausedForConnections",
+                            Description = $"Database instance {instance.Id} was paused automatically because it exceeded the concurrent connection limit."
+                        }, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to lock database instance {Id} for excessive concurrent connections", instance.Id);
+                    }
                 }
             }
-            else if (activeConnections > _options.MaxConcurrentConnectionsPerDatabase)
+            catch (Exception ex)
             {
-                try
-                {
-                    await service.PauseAsync(instance.Id, cancellationToken);
-                    await auditEventService.CreateAsync(new AuditEventCreateDto
-                    {
-                        UserId = instance.UserId,
-                        EventType = "DatabasePausedForConnections",
-                        Description = $"Database instance {instance.Id} was paused automatically because it exceeded the concurrent connection limit."
-                    }, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to lock database instance {Id} for excessive concurrent connections", instance.Id);
-                }
+                _logger.LogWarning(ex, "Failed to recalculate storage for instance {Id} ({DatabaseName})", instance.Id, instance.DatabaseName);
             }
         }
     }

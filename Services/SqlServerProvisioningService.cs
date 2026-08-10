@@ -98,6 +98,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             try
             {
                 var encryptedPassword = protector.Protect(password);
+                var initialUsedBytes = await GetUsedSpaceBytesAsync(identifier, cancellationToken);
 
                 var instance = await _databaseInstanceService.CreateAsync(new DatabaseInstanceCreateDto
                 {
@@ -108,7 +109,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                     DatabaseUser = sharedLoginName,
                     Engine = "SQL Server",
                     Status = "Active",
-                    UsedSpaceBytes = 0,
+                    UsedSpaceBytes = initialUsedBytes,
                     MaxSpaceBytes = _options.DefaultMaxSpaceBytes,
                     LastActivity = null
                 }, cancellationToken) ?? throw new InvalidOperationException("Failed to persist the provisioned database instance.");
@@ -162,8 +163,9 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
 
         ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
         await DisconnectDatabaseSessionsAsync(instance.DatabaseName, cancellationToken);
-        await SetDatabaseReadOnlyAsync(instance.DatabaseName, cancellationToken);
+        await SetDatabaseReadWriteAsync(instance.DatabaseName, cancellationToken);
         await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
+        await SetDatabaseReadOnlyAsync(instance.DatabaseName, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
     }
 
@@ -339,13 +341,18 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
     {
         ValidateDatabaseIdentifiers(databaseName);
 
+        if (!await DatabaseExistsAsync(databaseName, cancellationToken))
+        {
+            return 0L;
+        }
+
         var results = await _sqlServerExecutor.QueryAsync(
-            """
-            SELECT CAST(COALESCE(SUM(CAST(size AS BIGINT)), 0) * 8192 AS BIGINT) AS UsedBytes
-            FROM sys.master_files
-            WHERE database_id = DB_ID(@DatabaseName)
+            $"""
+            USE [{databaseName}];
+            SELECT CAST(COALESCE(SUM(CAST(FILEPROPERTY(name, 'SpaceUsed') AS BIGINT)), 0) * 8192 AS BIGINT) AS UsedBytes
+            FROM sys.database_files;
             """,
-            command => command.AddParameter("@DatabaseName", databaseName),
+            command => { },
             reader => reader.GetInt64Value("UsedBytes"),
             cancellationToken);
 
@@ -463,7 +470,11 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
     {
         var state = await _sqlExecutor.QuerySingleOrDefaultAsync(
             StoredProcedureNames.Users_GetSharedSqlServerProvisioningState,
-            command => command.AddParameter("@UserId", userId),
+            command =>
+            {
+                command.AddParameter("@UserId", userId);
+                command.AddParameter("@Engine", Engine);
+            },
             reader => new SqlServerSharedProvisioningStateDto
             {
                 SharedLoginName = reader.GetStringOrEmpty("SharedLoginName"),

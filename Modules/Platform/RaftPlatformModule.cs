@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using raft_backend.Configuration;
+using raft_backend.Response;
 using System.Threading.RateLimiting;
 
 namespace raft_backend.Modules.Platform;
@@ -283,7 +284,7 @@ public static class RaftPlatformModule
                 10));
             options.AddPolicy("credential-reveal", context => BuildPolicy(
                 context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString(),
-                5));
+                20));
             options.AddPolicy("admin-ops", context => BuildPolicy(
                 context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
                 30));
@@ -307,7 +308,7 @@ public static class RaftPlatformModule
                 30));
             options.AddPolicy("n8n-provisioning", context => BuildPolicy(
                 context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
-                5));
+                10));
             options.AddPolicy("dns-management", context => BuildPolicy(
                 context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.Connection.RemoteIpAddress?.ToString(),
                 30));
@@ -317,6 +318,17 @@ public static class RaftPlatformModule
             options.AddPolicy("database-provisioning", context => BuildPolicy(
                 context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString(),
                 10));
+
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                context.HttpContext.Response.ContentType = "application/json";
+                await context.HttpContext.Response.WriteAsJsonAsync(new ServiceResponse<object>
+                {
+                    Success = false,
+                    Message = "Has superado el límite de solicitudes. Por favor, intente de nuevo en un minuto."
+                }, cancellationToken);
+            };
         });
     }
 
