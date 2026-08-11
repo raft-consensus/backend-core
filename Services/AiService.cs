@@ -72,6 +72,102 @@ public class AiService : IAiService
         };
     }
 
+    public async Task<JsonElement?> ProxyOpenAiChatCompletionAsync(string apiKeySecret, JsonElement requestPayload, string? preferredProvider = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKeySecret))
+        {
+            return null;
+        }
+
+        var resolvedKey = await _apiKeyService.ResolveBySecretAsync(apiKeySecret, cancellationToken);
+        if (resolvedKey is null || !string.Equals(resolvedKey.Status, "Active", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var providerCandidates = ResolveProviderCandidates(preferredProvider);
+        foreach (var provider in providerCandidates)
+        {
+            if (!provider.IsConfigured)
+            {
+                continue;
+            }
+
+            try
+            {
+                var result = await ForwardOpenAiRequestAsync(provider, requestPayload, cancellationToken);
+                if (result is not null)
+                {
+                    var root = result.Value;
+                    var promptTokens = TryGetInt64(root, "usage", "prompt_tokens");
+                    var completionTokens = TryGetInt64(root, "usage", "completion_tokens");
+                    var totalTokens = TryGetInt64(root, "usage", "total_tokens");
+                    if (totalTokens == 0)
+                    {
+                        totalTokens = promptTokens + completionTokens;
+                    }
+                    var approxCostUsd = totalTokens > 0 ? Math.Round(totalTokens / 1000m * 0.002m, 6) : 0m;
+
+                    await _apiKeyService.RecordUsageAsync(
+                        resolvedKey.Id,
+                        promptTokens,
+                        completionTokens,
+                        approxCostUsd,
+                        cancellationToken);
+
+                    return root;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "AI provider {Provider} failed during OpenAI proxy request; trying next candidate", provider.Name);
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<JsonElement?> ForwardOpenAiRequestAsync(AiProviderOptions provider, JsonElement requestPayload, CancellationToken cancellationToken)
+    {
+        using var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(provider.RequestTimeoutSeconds > 0 ? provider.RequestTimeoutSeconds : _options.RequestTimeoutSeconds)
+        };
+
+        var apiKey = string.IsNullOrWhiteSpace(provider.ApiKey) ? _options.ApiKey : provider.ApiKey;
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        }
+
+        string rawJson;
+        if (requestPayload.ValueKind == JsonValueKind.Object && !requestPayload.TryGetProperty("model", out var modelProp))
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(requestPayload.GetRawText()) ?? new();
+            dict["model"] = string.IsNullOrWhiteSpace(provider.Model) ? _options.Model : provider.Model;
+            rawJson = JsonSerializer.Serialize(dict);
+        }
+        else
+        {
+            rawJson = requestPayload.GetRawText();
+        }
+
+        using var response = await client.PostAsync(
+            provider.Endpoint,
+            new StringContent(rawJson, Encoding.UTF8, "application/json"),
+            cancellationToken);
+
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Remote AI provider {Provider} returned HTTP {StatusCode}: {ResponseBody}", provider.Name, (int)response.StatusCode, responseBody);
+        }
+
+        using var document = JsonDocument.Parse(responseBody);
+        return document.RootElement.Clone();
+    }
+
+
     private async Task<AiGenerationResult> GenerateTextAsync(string mode, string? preferredProvider, string prompt, string? context, CancellationToken cancellationToken)
     {
         var providerCandidates = ResolveProviderCandidates(preferredProvider);
