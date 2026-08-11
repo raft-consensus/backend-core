@@ -4,6 +4,9 @@ Ejecutar en orden, de arriba hacia abajo, contra la base de datos `RaftDb` (o el
 
 > No hay migraciones EF ni ejecución automática desde el backend — este script es la única fuente de verdad del esquema. El backend solo consume las tablas/SPs/Views ya creados, vía `ISqlStoredProcedureExecutor`.
 
+> [!WARNING]
+> **`SET NOCOUNT ON` en Stored Procedures que usan `ExecuteAsync`:** El backend llama a `SqlStoredProcedureExecutor.ExecuteAsync` (que internamente usa `ExecuteNonQueryAsync` de ADO.NET) para detectar si un UPDATE/DELETE afectó alguna fila (`rows > 0` = éxito, `rows = 0` = no encontrado → 404). Si el SP incluye `SET NOCOUNT ON`, ADO.NET **no recibe el conteo de filas afectadas** y siempre devuelve 0, haciendo que el backend retorne 404 aunque la operación haya funcionado en la BD. **Regla:** solo omitir `SET NOCOUNT ON` en SPs invocados vía `ExecuteAsync`; los SPs usados con `QueryAsync` / `QuerySingleOrDefaultAsync` sí pueden usarlo libremente.
+
 ---
 
 ## 0. Login de aplicación
@@ -1220,7 +1223,12 @@ CREATE PROCEDURE dbo.usp_AiApiKeys_Revoke
     @UserId INT
 AS
 BEGIN
-    SET NOCOUNT ON;
+    -- ⚠️ IMPORTANTE: NO usar SET NOCOUNT ON aquí.
+    -- AiApiKeyService.RevokeAsync usa ExecuteNonQueryAsync (ADO.NET) para determinar
+    -- si la clave existía y fue afectada (rows > 0 → éxito, rows = 0 → 404 Not Found).
+    -- SET NOCOUNT ON suprime el mensaje "N row(s) affected" que ADO.NET necesita para
+    -- retornar el conteo real; sin él, ExecuteNonQueryAsync siempre devuelve -1 o 0
+    -- y el backend responde 404 aunque el UPDATE haya funcionado correctamente.
 
     UPDATE dbo.AiApiKeys
     SET Status = 'Revoked',

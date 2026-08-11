@@ -27,10 +27,19 @@ public class AiController : ControllerBase
         var apiKey = Request.Headers["X-API-Key"].ToString();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
+            var authHeader = Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                apiKey = authHeader["Bearer ".Length..].Trim();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
             return Unauthorized(new ServiceResponse<AiGenerateResponseDto>
             {
                 Success = false,
-                Message = "Missing X-API-Key header."
+                Message = "Missing Authorization (Bearer) or X-API-Key header."
             });
         }
 
