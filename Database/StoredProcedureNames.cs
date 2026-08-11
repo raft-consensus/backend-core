@@ -14,6 +14,8 @@ public static class StoredProcedureNames
     public const string Users_SetLocalPassword = "usp_Users_SetLocalPassword";
     public const string Users_SetTemporaryPassword = "usp_Users_SetTemporaryPassword";
     public const string Users_ChangeLocalPassword = "usp_Users_ChangeLocalPassword";
+    public const string Users_ResetPasswordDirect = "usp_Users_ResetPasswordDirect";
+    public const string Users_UpdateSelf = "usp_Users_UpdateSelf";
     public const string Users_GetSharedSqlServerProvisioningState = "usp_Users_GetSharedSqlServerProvisioningState";
 
     public const string DatabaseInstances_GetAll = "usp_DatabaseInstances_GetAll";

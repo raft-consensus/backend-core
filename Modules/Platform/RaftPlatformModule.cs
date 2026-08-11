@@ -86,6 +86,7 @@ public static class RaftPlatformModule
             .ValidateOnStart();
 
         builder.Services.Configure<ExternalCellConnectionStrings>(builder.Configuration.GetSection("ConnectionStrings"));
+        builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
 
         var frontendOptions = builder.Configuration.GetSection("Frontend").Get<FrontendOptions>()
             ?? throw new InvalidOperationException("Missing configuration section: Frontend");

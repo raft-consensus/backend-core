@@ -179,17 +179,15 @@ public class AuthService : IAuthService
             return false;
         }
 
-        var temporaryPassword = _passwordGenerator.Generate(TemporaryPasswordLength);
-        var temporaryPasswordHash = BCrypt.Net.BCrypt.HashPassword(temporaryPassword);
-        var expiresAt = DateTime.UtcNow.AddMinutes(TemporaryPasswordLifetimeMinutes);
+        var newPassword = _passwordGenerator.Generate(TemporaryPasswordLength);
+        var newPasswordHash = BCrypt.Net.BCrypt.HashPassword(newPassword);
 
         var updated = await _executor.QuerySingleOrDefaultAsync(
-            StoredProcedureNames.Users_SetTemporaryPassword,
+            StoredProcedureNames.Users_ChangeLocalPassword,
             command =>
             {
                 command.AddParameter("@UserId", lookup.User.Id);
-                command.AddParameter("@TemporaryPasswordHash", temporaryPasswordHash);
-                command.AddParameter("@TemporaryPasswordExpiresAt", expiresAt);
+                command.AddParameter("@PasswordHash", newPasswordHash);
             },
             MapUserReadDto,
             cancellationToken);
@@ -199,19 +197,18 @@ public class AuthService : IAuthService
             return false;
         }
 
-        await _recoveryEmailService.SendTemporaryPasswordAsync(
+        await _recoveryEmailService.SendPasswordResetEmailAsync(
             updated.Email,
             updated.Name,
-            temporaryPassword,
-            expiresAt,
+            newPassword,
             cancellationToken);
 
         await _auditEventService.CreateAsync(new AuditEventCreateDto
         {
             UserId = updated.Id,
-            EventType = "TemporaryPasswordRequested",
-            Description = "User requested a temporary password.",
-            AdditionalData = $"{{\"expiresAt\":\"{expiresAt:o}\"}}"
+            EventType = "PasswordResetRequested",
+            Description = "User requested password reset and a new permanent password was assigned.",
+            AdditionalData = $"{{\"resetAt\":\"{DateTime.UtcNow:o}\"}}"
         }, cancellationToken);
 
         return true;
@@ -308,6 +305,11 @@ public class AuthService : IAuthService
             Id = reader.GetInt32Value("Id"),
             Name = reader.GetStringOrEmpty("Name"),
             Email = reader.GetStringOrEmpty("Email"),
+            Organization = reader.GetNullableString("Organization"),
+            Phone = reader.GetNullableString("Phone"),
+            Gender = reader.GetNullableString("Gender"),
+            BirthDate = reader.GetNullableDateTime("BirthDate"),
+            Country = reader.GetNullableString("Country"),
             AvatarUrl = reader.GetNullableString("AvatarUrl"),
             Provider = reader.GetNullableString("Provider") ?? string.Empty,
             ProviderUserId = reader.GetNullableString("ProviderUserId") ?? string.Empty,

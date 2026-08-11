@@ -8,5 +8,6 @@ public interface IUserService
     Task<UserReadDto?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
     Task<UserReadDto?> CreateAsync(UserCreateDto dto, CancellationToken cancellationToken = default);
     Task<UserReadDto?> UpdateAsync(int id, UserUpdateDto dto, CancellationToken cancellationToken = default);
+    Task<UserReadDto?> UpdateSelfAsync(int userId, UserProfileUpdateDto dto, CancellationToken cancellationToken = default);
     Task<bool> SoftDeleteAsync(int id, CancellationToken cancellationToken = default);
 }

@@ -1,6 +1,5 @@
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Net;
+using System.Net.Mail;
 using Microsoft.Extensions.Options;
 using raft_backend.Configuration;
 using raft_backend.Interfaces;
@@ -9,93 +8,100 @@ namespace raft_backend.Services;
 
 public class AuthRecoveryEmailService : IAuthRecoveryEmailService
 {
-    private readonly N8nProvisioningOptions _options;
+    private readonly SmtpOptions _smtpOptions;
     private readonly FrontendOptions _frontendOptions;
     private readonly ILogger<AuthRecoveryEmailService> _logger;
 
     public AuthRecoveryEmailService(
-        IOptions<N8nProvisioningOptions> options,
+        IOptions<SmtpOptions> smtpOptions,
         IOptions<FrontendOptions> frontendOptions,
         ILogger<AuthRecoveryEmailService> logger)
     {
-        _options = options.Value;
+        _smtpOptions = smtpOptions.Value;
         _frontendOptions = frontendOptions.Value;
         _logger = logger;
     }
 
-    public async Task SendTemporaryPasswordAsync(
+    public async Task SendPasswordResetEmailAsync(
         string email,
         string name,
-        string temporaryPassword,
-        DateTime expiresAt,
+        string newPassword,
         CancellationToken cancellationToken = default)
     {
-        using var client = new HttpClient
+        var subject = "Recuperación de Contraseña - Raft DB Platform";
+        var htmlBody = $@"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <style>
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; background-color: #0f172a; color: #f8fafc; padding: 20px; }}
+        .card {{ max-width: 500px; margin: 0 auto; background-color: #1e293b; border-radius: 12px; padding: 32px; border: 1px solid #334155; }}
+        .header {{ text-align: center; margin-bottom: 24px; }}
+        .title {{ color: #38bdf8; font-size: 24px; font-weight: bold; margin: 0; }}
+        .password-box {{ background-color: #0f172a; border: 1px dashed #38bdf8; border-radius: 8px; padding: 16px; text-align: center; font-size: 22px; font-weight: bold; letter-spacing: 2px; color: #38bdf8; margin: 24px 0; }}
+        .btn {{ display: inline-block; background-color: #0284c7; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; text-align: center; }}
+        .footer {{ margin-top: 24px; text-align: center; font-size: 12px; color: #94a3b8; }}
+    </style>
+</head>
+<body>
+    <div class='card'>
+        <div class='header'>
+            <h2 class='title'>Raft DB Platform</h2>
+        </div>
+        <p>Hola <strong>{WebUtility.HtmlEncode(name)}</strong>,</p>
+        <p>Hemos procesado tu solicitud para restablecer tu contraseña. Tu nueva contraseña de acceso es:</p>
+        
+        <div class='password-box'>{WebUtility.HtmlEncode(newPassword)}</div>
+        
+        <p>Puedes usar esta contraseña para iniciar sesión en tu cuenta inmediatamente.</p>
+        <p style='text-align: center; margin-top: 24px;'>
+            <a href='{_frontendOptions.Origin}' class='btn'>Iniciar Sesión</a>
+        </p>
+        <div class='footer'>
+            <p>Si no solicitaste este cambio, puedes actualizar tu contraseña desde la sección de configuración de tu cuenta.</p>
+        </div>
+    </div>
+</body>
+</html>";
+
+        // Si Smtp no está habilitado o no tiene Host configurado, logueamos el correo para pruebas locales.
+        if (!_smtpOptions.EnableSmtp || string.IsNullOrWhiteSpace(_smtpOptions.Host))
         {
-            Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds)
-        };
-
-        client.DefaultRequestHeaders.Add("X-Api-Key", _options.ApiKey);
-
-        var payload = new PasswordRecoveryRequestDto
-        {
-            Email = email,
-            Name = name,
-            TemporaryPassword = temporaryPassword,
-            ExpiresAt = expiresAt.ToUniversalTime().ToString("o"),
-            FrontendUrl = _frontendOptions.Origin
-        };
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildRecoveryUrl())
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        };
-
-        using var response = await client.SendAsync(request, cancellationToken);
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var message = string.IsNullOrWhiteSpace(responseBody)
-                ? $"N8N password recovery returned HTTP {(int)response.StatusCode}."
-                : $"N8N password recovery returned HTTP {(int)response.StatusCode}: {responseBody}";
-
-            _logger.LogWarning("Password recovery email delivery failed for {Email}: {Message}", email, message);
-            throw new InvalidOperationException(Sanitize(message));
+            _logger.LogInformation("SMTP disabled/unconfigured. Password reset for {Email} ({Name}): {NewPassword}", email, name, newPassword);
+            return;
         }
-    }
 
-    private string BuildRecoveryUrl()
-    {
-        var baseUrl = _options.BaseUrl.Trim();
-        if (!baseUrl.EndsWith('/'))
+        try
         {
-            baseUrl += "/";
+            using var mailMessage = new MailMessage
+            {
+                From = new MailAddress(_smtpOptions.FromEmail, _smtpOptions.FromName),
+                Subject = subject,
+                Body = htmlBody,
+                IsBodyHtml = true
+            };
+            mailMessage.To.Add(new MailAddress(email, name));
+
+            using var smtpClient = new SmtpClient(_smtpOptions.Host, _smtpOptions.Port)
+            {
+                EnableSsl = _smtpOptions.EnableSsl,
+                DeliveryMethod = SmtpDeliveryMethod.Network,
+                UseDefaultCredentials = false
+            };
+
+            if (!string.IsNullOrWhiteSpace(_smtpOptions.UserName))
+            {
+                smtpClient.Credentials = new NetworkCredential(_smtpOptions.UserName, _smtpOptions.Password);
+            }
+
+            await smtpClient.SendMailAsync(mailMessage, cancellationToken);
+            _logger.LogInformation("Password reset email sent successfully to {Email}", email);
         }
-
-        return new Uri(new Uri(baseUrl), "n8n/external/password-recovery").ToString();
-    }
-
-    private static string Sanitize(string value)
-    {
-        return value.Replace("\r", " ").Replace("\n", " ").Trim();
-    }
-
-    private sealed class PasswordRecoveryRequestDto
-    {
-        [JsonPropertyName("email")]
-        public string Email { get; set; } = string.Empty;
-
-        [JsonPropertyName("name")]
-        public string Name { get; set; } = string.Empty;
-
-        [JsonPropertyName("temporary_password")]
-        public string TemporaryPassword { get; set; } = string.Empty;
-
-        [JsonPropertyName("expires_at")]
-        public string ExpiresAt { get; set; } = string.Empty;
-
-        [JsonPropertyName("frontend_url")]
-        public string FrontendUrl { get; set; } = string.Empty;
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send password reset email via SMTP to {Email}. Fallback log password: {NewPassword}", email, newPassword);
+            // No bloqueamos el flujo principal si el servidor SMTP falla, la clave ya fue cambiada en la BD.
+        }
     }
 }

@@ -1,6 +1,7 @@
 using System.Data.Common;
 using raft_backend.Database;
 using raft_backend.DTOs;
+using raft_backend.Interfaces;
 using raft_backend.Models;
 
 namespace raft_backend.Services;
@@ -40,6 +41,7 @@ public class UserService : IUserService
             {
                 command.AddParameter("@Name", dto.Name);
                 command.AddParameter("@Email", dto.Email);
+                command.AddParameter("@Organization", dto.Organization);
                 command.AddParameter("@AvatarUrl", dto.AvatarUrl);
                 command.AddParameter("@Provider", dto.Provider);
                 command.AddParameter("@ProviderUserId", dto.ProviderUserId);
@@ -58,10 +60,29 @@ public class UserService : IUserService
                 command.AddParameter("@Id", id);
                 command.AddParameter("@Name", dto.Name);
                 command.AddParameter("@Email", dto.Email);
+                command.AddParameter("@Organization", dto.Organization);
                 command.AddParameter("@AvatarUrl", dto.AvatarUrl);
                 command.AddParameter("@Provider", dto.Provider);
                 command.AddParameter("@ProviderUserId", dto.ProviderUserId);
                 command.AddParameter("@LastLogin", dto.LastLogin);
+            },
+            Map,
+            cancellationToken);
+    }
+
+    public Task<UserReadDto?> UpdateSelfAsync(int userId, UserProfileUpdateDto dto, CancellationToken cancellationToken = default)
+    {
+        return _executor.QuerySingleOrDefaultAsync(
+            StoredProcedureNames.Users_UpdateSelf,
+            command =>
+            {
+                command.AddParameter("@UserId", userId);
+                command.AddParameter("@Name", dto.Name);
+                command.AddParameter("@Organization", dto.Organization);
+                command.AddParameter("@Phone", dto.Phone);
+                command.AddParameter("@Gender", dto.Gender);
+                command.AddParameter("@BirthDate", dto.BirthDate);
+                command.AddParameter("@Country", dto.Country);
             },
             Map,
             cancellationToken);
@@ -84,6 +105,11 @@ public class UserService : IUserService
             Id = reader.GetInt32Value("Id"),
             Name = reader.GetStringOrEmpty("Name"),
             Email = reader.GetStringOrEmpty("Email"),
+            Organization = reader.GetNullableString("Organization"),
+            Phone = reader.GetNullableString("Phone"),
+            Gender = reader.GetNullableString("Gender"),
+            BirthDate = reader.GetNullableDateTime("BirthDate"),
+            Country = reader.GetNullableString("Country"),
             AvatarUrl = reader.GetNullableString("AvatarUrl"),
             Provider = reader.GetStringOrEmpty("Provider"),
             ProviderUserId = reader.GetStringOrEmpty("ProviderUserId"),
