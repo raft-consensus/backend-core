@@ -138,7 +138,7 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseUser);
         await KillSessionsAsync(instance.DatabaseName, instance.DatabaseUser, cancellationToken);
         await ExecuteAsync(
-            $"""REVOKE ALL PRIVILEGES, GRANT OPTION ON `{instance.DatabaseName}`.* FROM '{instance.DatabaseUser}'@'%';""",
+            $"""REVOKE ALL PRIVILEGES ON `{instance.DatabaseName}`.* FROM '{instance.DatabaseUser}'@'%';""",
             null,
             cancellationToken);
         await ExecuteAsync("FLUSH PRIVILEGES;", null, cancellationToken);
