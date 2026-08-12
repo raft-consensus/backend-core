@@ -46,6 +46,8 @@ public static class StoredProcedureNames
     public const string AiApiKeys_Rotate = "usp_AiApiKeys_Rotate";
     public const string AiApiKeys_Revoke = "usp_AiApiKeys_Revoke";
     public const string AiApiKeys_RecordUsage = "usp_AiApiKeys_RecordUsage";
+    public const string AiUsageLogs_GetHistoryByUserId = "usp_AiUsageLogs_GetHistoryByUserId";
+    public const string AiUsageLogs_GetAnalyticsByUserId = "usp_AiUsageLogs_GetAnalyticsByUserId";
 
     public const string N8nAccounts_GetAllByUserId = "usp_N8nAccounts_GetAllByUserId";
     public const string N8nAccounts_GetAll = "usp_N8nAccounts_GetAll";

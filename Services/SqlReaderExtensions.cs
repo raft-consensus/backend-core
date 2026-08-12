@@ -86,4 +86,11 @@ public static class SqlReaderExtensions
         var value = reader[name];
         return value == DBNull.Value ? false : Convert.ToBoolean(value);
     }
+
+    public static double GetDoubleValue(this DbDataReader reader, string name)
+    {
+        if (!HasColumn(reader, name)) return 0.0;
+        var value = reader[name];
+        return value == DBNull.Value ? 0.0 : Convert.ToDouble(value);
+    }
 }

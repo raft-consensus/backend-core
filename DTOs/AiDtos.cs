@@ -61,3 +61,67 @@ public class AiGenerateResponseDto
     public decimal ApproxCostUsd { get; set; }
     public DateTime CreatedAt { get; set; }
 }
+
+public class AiUsageLogReadDto
+{
+    public long Id { get; set; }
+    public int AiApiKeyId { get; set; }
+    public string KeyName { get; set; } = string.Empty;
+    public string KeyPrefix { get; set; } = string.Empty;
+    public int UserId { get; set; }
+    public string Provider { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public string Endpoint { get; set; } = string.Empty;
+    public string? Mode { get; set; }
+    public long PromptTokens { get; set; }
+    public long CompletionTokens { get; set; }
+    public long TotalTokens { get; set; }
+    public decimal ApproxCostUsd { get; set; }
+    public int? DurationMs { get; set; }
+    public int StatusCode { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class AiUsageHistoryFilterDto
+{
+    public int? AiApiKeyId { get; set; }
+    public DateTime? FromDate { get; set; }
+    public DateTime? ToDate { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 50;
+}
+
+public class AiUsageSummaryTotalsDto
+{
+    public long TotalEvents { get; set; }
+    public long TotalPromptTokens { get; set; }
+    public long TotalCompletionTokens { get; set; }
+    public long TotalTokens { get; set; }
+    public decimal TotalCostUsd { get; set; }
+    public double AvgDurationMs { get; set; }
+}
+
+public class AiUsageTimeSeriesPointDto
+{
+    public DateTime Date { get; set; }
+    public long RequestsCount { get; set; }
+    public long TotalTokens { get; set; }
+    public decimal CostUsd { get; set; }
+}
+
+public class AiUsageModelBreakdownDto
+{
+    public string Provider { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public long RequestsCount { get; set; }
+    public long TotalTokens { get; set; }
+    public decimal CostUsd { get; set; }
+}
+
+public class AiUsageAnalyticsDto
+{
+    public AiUsageSummaryTotalsDto Summary { get; set; } = new();
+    public List<AiUsageTimeSeriesPointDto> TimeSeries { get; set; } = new();
+    public List<AiUsageModelBreakdownDto> ModelBreakdown { get; set; } = new();
+}
+

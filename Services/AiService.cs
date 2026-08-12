@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -36,8 +37,11 @@ public class AiService : IAiService
             return null;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         var mode = NormalizeMode(request.Mode);
         var result = await GenerateTextAsync(mode, request.Provider, request.Prompt, request.Context, cancellationToken);
+        stopwatch.Stop();
+
         var promptTokens = result.PromptTokens > 0
             ? result.PromptTokens
             : EstimateTokens(request.Prompt + " " + (request.Context ?? string.Empty));
@@ -50,11 +54,18 @@ public class AiService : IAiService
         var approxCostUsd = result.ApproxCostUsd;
 
         await _apiKeyService.RecordUsageAsync(
-            resolvedKey.Id,
-            promptTokens,
-            completionTokens,
-            approxCostUsd,
-            cancellationToken);
+            keyId: resolvedKey.Id,
+            userId: resolvedKey.UserId,
+            provider: result.Provider,
+            model: result.Model,
+            endpoint: "/api/ai/generate",
+            mode: mode,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            approxCostUsd: approxCostUsd,
+            durationMs: (int)stopwatch.ElapsedMilliseconds,
+            statusCode: 200,
+            cancellationToken: cancellationToken);
 
         return new AiGenerateResponseDto
         {
@@ -85,6 +96,7 @@ public class AiService : IAiService
             return null;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         var providerCandidates = ResolveProviderCandidates(preferredProvider);
         foreach (var provider in providerCandidates)
         {
@@ -98,7 +110,9 @@ public class AiService : IAiService
                 var result = await ForwardOpenAiRequestAsync(provider, requestPayload, cancellationToken);
                 if (result is not null)
                 {
+                    stopwatch.Stop();
                     var root = result.Value;
+                    var modelUsed = TryGetString(root, "model") ?? provider.Model ?? _options.Model;
                     var promptTokens = TryGetInt64(root, "usage", "prompt_tokens");
                     var completionTokens = TryGetInt64(root, "usage", "completion_tokens");
                     var totalTokens = TryGetInt64(root, "usage", "total_tokens");
@@ -109,11 +123,18 @@ public class AiService : IAiService
                     var approxCostUsd = totalTokens > 0 ? Math.Round(totalTokens / 1000m * 0.002m, 6) : 0m;
 
                     await _apiKeyService.RecordUsageAsync(
-                        resolvedKey.Id,
-                        promptTokens,
-                        completionTokens,
-                        approxCostUsd,
-                        cancellationToken);
+                        keyId: resolvedKey.Id,
+                        userId: resolvedKey.UserId,
+                        provider: provider.Name,
+                        model: modelUsed,
+                        endpoint: "/v1/chat/completions",
+                        mode: "chat",
+                        promptTokens: promptTokens,
+                        completionTokens: completionTokens,
+                        approxCostUsd: approxCostUsd,
+                        durationMs: (int)stopwatch.ElapsedMilliseconds,
+                        statusCode: 200,
+                        cancellationToken: cancellationToken);
 
                     return root;
                 }
@@ -272,6 +293,13 @@ public class AiService : IAiService
         return container.TryGetProperty(propertyName, out var property) && property.TryGetInt64(out var value)
             ? value
             : 0;
+    }
+
+    private static string? TryGetString(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
     }
 
     private static string NormalizeMode(string? mode)

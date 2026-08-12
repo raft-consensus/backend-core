@@ -100,6 +100,39 @@ public class AiKeysController : ControllerBase
         });
     }
 
+    [HttpGet("usage/history")]
+    public async Task<ActionResult<ServiceResponse<IEnumerable<AiUsageLogReadDto>>>> GetHistory(
+        [FromQuery] AiUsageHistoryFilterDto filter,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var items = await _service.GetUsageHistoryAsync(userId, filter, cancellationToken);
+
+        return Ok(new ServiceResponse<IEnumerable<AiUsageLogReadDto>>
+        {
+            Success = true,
+            Message = "AI usage history retrieved successfully.",
+            Data = items
+        });
+    }
+
+    [HttpGet("usage/analytics")]
+    public async Task<ActionResult<ServiceResponse<AiUsageAnalyticsDto>>> GetAnalytics(
+        [FromQuery] DateTime? fromDate,
+        [FromQuery] DateTime? toDate,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var data = await _service.GetUsageAnalyticsAsync(userId, fromDate, toDate, cancellationToken);
+
+        return Ok(new ServiceResponse<AiUsageAnalyticsDto>
+        {
+            Success = true,
+            Message = "AI usage analytics retrieved successfully.",
+            Data = data
+        });
+    }
+
     private int GetUserId()
     {
         var value = User.FindFirstValue(ClaimTypes.NameIdentifier)

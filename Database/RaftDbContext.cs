@@ -15,6 +15,7 @@ public class RaftDbContext : DbContext
     public DbSet<AccessCredential> AccessCredentials => Set<AccessCredential>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<AiApiKey> AiApiKeys => Set<AiApiKey>();
+    public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -137,6 +138,35 @@ public class RaftDbContext : DbContext
             entity.HasIndex(x => x.UserId);
             entity.HasIndex(x => new { x.UserId, x.Status });
             entity.HasQueryFilter(x => x.Revoked_at == null || x.Status == "Active" || x.Status == "Revoked");
+            entity.HasOne(x => x.User)
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AiUsageLog>(entity =>
+        {
+            entity.ToTable("AiUsageLogs");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Provider).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.Model).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.Endpoint).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.Mode).HasMaxLength(40);
+            entity.Property(x => x.PromptTokens).HasDefaultValue(0);
+            entity.Property(x => x.CompletionTokens).HasDefaultValue(0);
+            entity.Property(x => x.TotalTokens).HasDefaultValue(0);
+            entity.Property(x => x.ApproxCostUsd).HasColumnType("decimal(18,6)").HasDefaultValue(0m);
+            entity.Property(x => x.StatusCode).HasDefaultValue(200);
+            entity.Property(x => x.Created_at)
+                .HasColumnName("Created_at")
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.HasIndex(x => new { x.UserId, x.Created_at });
+            entity.HasIndex(x => new { x.AiApiKeyId, x.Created_at });
+            entity.HasIndex(x => x.Created_at);
+            entity.HasOne(x => x.AiApiKey)
+                .WithMany()
+                .HasForeignKey(x => x.AiApiKeyId)
+                .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.User)
                 .WithMany()
                 .HasForeignKey(x => x.UserId)
