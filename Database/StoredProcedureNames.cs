@@ -75,6 +75,7 @@ public static class StoredProcedureNames
 
     public const string DatabaseInstances_UpdateStatus = "usp_DatabaseInstances_UpdateStatus";
     public const string DatabaseInstances_GetDueForPause = "usp_DatabaseInstances_GetDueForPause";
+    public const string DatabaseInstances_GetDueForOrphan = "usp_DatabaseInstances_GetDueForOrphan";
     public const string DatabaseInstances_GetDueForDelete = "usp_DatabaseInstances_GetDueForDelete";
     public const string DatabaseInstances_UpdateUsedSpace = "usp_DatabaseInstances_UpdateUsedSpace";
     public const string DatabaseInstances_TouchActivityByDatabaseName = "usp_DatabaseInstances_TouchActivityByDatabaseName";

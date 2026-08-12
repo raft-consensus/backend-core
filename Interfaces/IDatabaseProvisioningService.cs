@@ -18,6 +18,8 @@ public interface IDatabaseProvisioningService
 
     Task DeleteAsync(int databaseInstanceId, CancellationToken cancellationToken = default);
 
+    Task PurgeAsync(int databaseInstanceId, CancellationToken cancellationToken = default);
+
     Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default);
 
     Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default);

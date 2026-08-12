@@ -640,11 +640,14 @@ BEGIN
     SET NOCOUNT ON;
 
     UPDATE DatabaseInstances
-    SET Deleted_at = SYSUTCDATETIME()
+    SET Deleted_at = SYSUTCDATETIME(),
+        Status = 'Orphaned',
+        Updated_at = SYSUTCDATETIME()
     WHERE Id = @Id AND Deleted_at IS NULL;
 
     UPDATE AccessCredentials
-    SET Deleted_at = SYSUTCDATETIME()
+    SET Deleted_at = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
     WHERE DatabaseInstanceId = @Id AND Deleted_at IS NULL;
 END
 ```
@@ -871,7 +874,8 @@ SELECT
     di.LastActivity,
     di.Created_at AS CreatedAt
 FROM DatabaseInstances di
-WHERE di.Deleted_at IS NULL;
+WHERE di.Deleted_at IS NULL
+  AND di.Status NOT IN ('Orphaned', 'Deleted');
 
 CREATE OR ALTER PROCEDURE usp_UserDashboard_GetByUserId
     @UserId INT
@@ -974,6 +978,7 @@ BEGIN
             WHERE di.UserId = @UserId
               AND (@Engine IS NULL OR di.Engine = @Engine)
               AND di.Deleted_at IS NULL
+              AND di.Status NOT IN ('Orphaned', 'Deleted')
         ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END,
         EncryptedPassword = (
             SELECT TOP 1 ac.EncryptedPassword
@@ -982,6 +987,7 @@ BEGIN
             WHERE di.UserId = @UserId
               AND (@Engine IS NULL OR di.Engine = @Engine)
               AND di.Deleted_at IS NULL
+              AND di.Status NOT IN ('Orphaned', 'Deleted')
               AND ac.Deleted_at IS NULL
             ORDER BY di.Id
         );
@@ -1027,8 +1033,9 @@ BEGIN
 END
 
 -- Cae en Created_at cuando la instancia nunca tuvo actividad, para que también expire.
+-- Selecciona bases activas sin actividad por 7 días
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForPause
-    @InactivityDays INT
+    @InactivityDays INT = 7
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -1040,9 +1047,9 @@ BEGIN
       AND COALESCE(LastActivity, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
 END
 
--- Cubre 'Active' y 'Suspended': si el job se cayó y se saltó la pausa, igual elimina al vencer.
-CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForDelete
-    @InactivityDays INT
+-- Selecciona bases pausadas sin reactivar por 7 días (pasan a huérfanas)
+CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForOrphan
+    @InactivityDays INT = 7
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -1050,8 +1057,21 @@ BEGIN
     SELECT Id
     FROM DatabaseInstances
     WHERE Deleted_at IS NULL
-      AND Status IN ('Active', 'Suspended')
-      AND COALESCE(LastActivity, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
+      AND Status = 'Paused'
+      AND COALESCE(Updated_at, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
+END
+
+-- Selecciona bases huérfanas por más de 30 días para purga física
+CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetDueForDelete
+    @InactivityDays INT = 30
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT Id
+    FROM DatabaseInstances
+    WHERE Status = 'Orphaned'
+      AND COALESCE(Deleted_at, Updated_at, Created_at) <= DATEADD(DAY, -@InactivityDays, SYSUTCDATETIME());
 END
 
 CREATE OR ALTER PROCEDURE usp_DatabaseInstances_GetSharedLoginCleanupState

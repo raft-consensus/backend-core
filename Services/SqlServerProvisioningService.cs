@@ -192,6 +192,18 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
+        // Revocar permisos de conexión al usuario para que no pueda interactuar con la BD huérfana
+        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
+
+        // Marcar la instancia como Orphaned y liberar la cuota en los Stored Procedures
+        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+    }
+
+    public async Task PurgeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
+    {
+        var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
+            ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
         await _sqlServerExecutor.ExecuteNonQueryAsync(
             $"""
              IF DB_ID(N'{instance.DatabaseName}') IS NOT NULL
@@ -218,7 +230,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
                 cancellationToken);
         }
 
-        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, "Deleted", cancellationToken);
     }
 
     private async Task UpdateStatusAsync(int databaseInstanceId, string status, CancellationToken cancellationToken)

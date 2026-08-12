@@ -144,6 +144,14 @@ public class MongoProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
+        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+    }
+
+    public async Task PurgeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
+    {
+        var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
+            ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
         if (!string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
         {
             try
@@ -157,7 +165,7 @@ public class MongoProvisioningService : IDatabaseProvisioningService
             }
         }
 
-        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Deleted", cancellationToken);
     }
 
     public Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)

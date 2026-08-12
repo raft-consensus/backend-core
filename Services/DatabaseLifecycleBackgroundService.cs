@@ -54,6 +54,7 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         var resolver = scope.ServiceProvider.GetRequiredService<IDatabaseProvisioningServiceResolver>();
 
         await PauseInactiveAsync(sqlExecutor, resolver, auditEventService, cancellationToken);
+        await OrphanInactiveAsync(sqlExecutor, resolver, auditEventService, cancellationToken);
         await DeleteExpiredAsync(sqlExecutor, resolver, auditEventService, cancellationToken);
         await RecalculateStorageAsync(sqlExecutor, databaseInstanceService, resolver, auditEventService, cancellationToken);
     }
@@ -96,19 +97,19 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
         }
     }
 
-    private async Task DeleteExpiredAsync(
+    private async Task OrphanInactiveAsync(
         ISqlStoredProcedureExecutor sqlExecutor,
         IDatabaseProvisioningServiceResolver resolver,
         IAuditEventService auditEventService,
         CancellationToken cancellationToken)
     {
-        var dueForDelete = await sqlExecutor.QueryAsync(
-            StoredProcedureNames.DatabaseInstances_GetDueForDelete,
-            command => command.AddParameter("@InactivityDays", _options.InactivityDeleteDays),
+        var dueForOrphan = await sqlExecutor.QueryAsync(
+            StoredProcedureNames.DatabaseInstances_GetDueForOrphan,
+            command => command.AddParameter("@InactivityDays", _options.InactivityOrphanDays),
             reader => reader.GetInt32Value("Id"),
             cancellationToken);
 
-        foreach (var id in dueForDelete)
+        foreach (var id in dueForOrphan)
         {
             try
             {
@@ -123,13 +124,51 @@ public class DatabaseLifecycleBackgroundService : BackgroundService
                 await auditEventService.CreateAsync(new AuditEventCreateDto
                 {
                     UserId = null,
-                    EventType = "DatabaseDeletedForInactivity",
-                    Description = $"Database instance {id} was deleted automatically after inactivity TTL."
+                    EventType = "DatabaseOrphanedForInactivity",
+                    Description = $"Database instance {id} was orphaned automatically after remaining paused for inactivity."
                 }, cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to delete expired database instance {Id}", id);
+                _logger.LogError(ex, "Failed to mark database instance {Id} as orphaned for inactivity", id);
+            }
+        }
+    }
+
+    private async Task DeleteExpiredAsync(
+        ISqlStoredProcedureExecutor sqlExecutor,
+        IDatabaseProvisioningServiceResolver resolver,
+        IAuditEventService auditEventService,
+        CancellationToken cancellationToken)
+    {
+        var dueForDelete = await sqlExecutor.QueryAsync(
+            StoredProcedureNames.DatabaseInstances_GetDueForDelete,
+            command => command.AddParameter("@InactivityDays", _options.OrphanDeleteDays),
+            reader => reader.GetInt32Value("Id"),
+            cancellationToken);
+
+        foreach (var id in dueForDelete)
+        {
+            try
+            {
+                var instance = await FindInstanceAsync(id, cancellationToken);
+                if (instance is null)
+                {
+                    continue;
+                }
+
+                await resolver.Resolve(instance.Engine).PurgeAsync(id, cancellationToken);
+
+                await auditEventService.CreateAsync(new AuditEventCreateDto
+                {
+                    UserId = null,
+                    EventType = "DatabasePurgedForInactivity",
+                    Description = $"Database instance {id} was physically purged automatically after 30 days in orphaned state."
+                }, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to purge expired database instance {Id}", id);
             }
         }
     }

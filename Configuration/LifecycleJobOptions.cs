@@ -11,7 +11,13 @@ public class LifecycleJobOptions
     public int InactivityPauseDays { get; set; } = 7;
 
     [Range(1, 3650)]
-    public int InactivityDeleteDays { get; set; } = 30;
+    public int InactivityOrphanDays { get; set; } = 7;
+
+    [Range(1, 3650)]
+    public int OrphanDeleteDays { get; set; } = 30;
+
+    [Range(1, 3650)]
+    public int InactivityDeleteDays { get => OrphanDeleteDays; set => OrphanDeleteDays = value; }
 
     [Range(1, 1000)]
     public int MaxConcurrentConnectionsPerDatabase { get; set; } = 5;

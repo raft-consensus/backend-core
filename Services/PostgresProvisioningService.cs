@@ -163,6 +163,22 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
+        ValidateIdentifier(instance.DatabaseName);
+        ValidateIdentifier(instance.DatabaseUser);
+
+        await ExecuteAsync(
+            $"""REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";""",
+            null,
+            cancellationToken);
+
+        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+    }
+
+    public async Task PurgeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
+    {
+        var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
+            ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
         var owned = await _dashboardService.GetByUserIdAsync(instance.UserId, cancellationToken);
         var isLastDatabase = owned.Count <= 1;
 
@@ -176,7 +192,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
             await ExecuteAsync($"""DROP ROLE IF EXISTS "{instance.DatabaseUser}";""", null, cancellationToken);
         }
 
-        await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, "Deleted", cancellationToken);
     }
 
     public async Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
