@@ -10,6 +10,17 @@ public class N8nAccountReadDto
     public string Email { get; set; } = string.Empty;
     public string? AccountId { get; set; }
     public string Status { get; set; } = string.Empty;
+    public string? Credential { get; set; }
+    public string? AccessType { get; set; }
+    public int ActiveWorkflowsCount { get; set; }
+    public int TotalWorkflowsCount { get; set; }
+    public long TotalExecutions { get; set; }
+    public long SuccessfulExecutions { get; set; }
+    public long FailedExecutions { get; set; }
+    public int MonthlyExecutions { get; set; }
+    public int MaxMonthlyExecutions { get; set; }
+    public DateTime? MonthlyResetDate { get; set; }
+    public DateTime? LastExecutionAt { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public DateTime? ProvisionedAt { get; set; }

@@ -75,10 +75,47 @@ public class N8nProvisioningService : IN8nProvisioningService
         var existing = await GetActiveByUserIdAsync(userId, cancellationToken);
         if (existing is not null)
         {
+            if (string.IsNullOrWhiteSpace(existing.Credential))
+            {
+                try
+                {
+                    var healedRemote = await ProvisionRemoteAccountAsync(existing.ExternalUserRef, existing.Email, cancellationToken);
+                    var healed = await _executor.QuerySingleOrDefaultAsync(
+                        StoredProcedureNames.N8nAccounts_MarkProvisioned,
+                        command =>
+                        {
+                            command.AddParameter("@Id", existing.Id);
+                            command.AddParameter("@UserId", userId);
+                            command.AddParameter("@AccountId", healedRemote.AccountId);
+                            command.AddParameter("@Credential", (object?)healedRemote.Credential ?? DBNull.Value);
+                            command.AddParameter("@AccessType", (object?)healedRemote.AccessType ?? DBNull.Value);
+                        },
+                        Map,
+                        cancellationToken);
+
+                    if (healed is not null)
+                    {
+                        return new N8nProvisioningResultDto
+                        {
+                            Created = false,
+                            Account = healed,
+                            AccessType = healedRemote.AccessType,
+                            Credential = healedRemote.Credential
+                        };
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not self-heal credential for existing n8n account user {UserId}", userId);
+                }
+            }
+
             return new N8nProvisioningResultDto
             {
                 Created = false,
-                Account = existing
+                Account = existing,
+                AccessType = existing.AccessType,
+                Credential = existing.Credential
             };
         }
 
@@ -154,6 +191,8 @@ public class N8nProvisioningService : IN8nProvisioningService
                 command.AddParameter("@Id", pending.Id);
                 command.AddParameter("@UserId", userId);
                 command.AddParameter("@AccountId", remoteResponse.AccountId);
+                command.AddParameter("@Credential", (object?)remoteResponse.Credential ?? DBNull.Value);
+                command.AddParameter("@AccessType", (object?)remoteResponse.AccessType ?? DBNull.Value);
             },
             Map,
             cancellationToken);
@@ -286,6 +325,17 @@ public class N8nProvisioningService : IN8nProvisioningService
             Email = reader.GetStringOrEmpty("Email"),
             AccountId = reader.GetNullableString("AccountId"),
             Status = reader.GetStringOrEmpty("Status"),
+            Credential = reader.GetNullableString("Credential"),
+            AccessType = reader.GetNullableString("AccessType"),
+            ActiveWorkflowsCount = reader.GetInt32Value("ActiveWorkflowsCount"),
+            TotalWorkflowsCount = reader.GetInt32Value("TotalWorkflowsCount"),
+            TotalExecutions = reader.GetInt64Value("TotalExecutions"),
+            SuccessfulExecutions = reader.GetInt64Value("SuccessfulExecutions"),
+            FailedExecutions = reader.GetInt64Value("FailedExecutions"),
+            MonthlyExecutions = reader.GetInt32Value("MonthlyExecutions"),
+            MaxMonthlyExecutions = reader.GetInt32Value("MaxMonthlyExecutions"),
+            MonthlyResetDate = reader.GetNullableDateTime("MonthlyResetDate"),
+            LastExecutionAt = reader.GetNullableDateTime("LastExecutionAt"),
             CreatedAt = reader.GetDateTimeValue("CreatedAt"),
             UpdatedAt = reader.GetNullableDateTime("UpdatedAt"),
             ProvisionedAt = reader.GetNullableDateTime("ProvisionedAt"),

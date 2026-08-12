@@ -1571,6 +1571,17 @@ CREATE TABLE dbo.N8nAccounts (
     Email NVARCHAR(320) NOT NULL,
     AccountId NVARCHAR(128) NULL,
     Status NVARCHAR(20) NOT NULL CONSTRAINT DF_N8nAccounts_Status DEFAULT ('Pending'),
+    Credential NVARCHAR(2048) NULL,
+    AccessType NVARCHAR(50) NULL,
+    ActiveWorkflowsCount INT NOT NULL CONSTRAINT DF_N8nAccounts_ActiveWorkflows DEFAULT (0),
+    TotalWorkflowsCount INT NOT NULL CONSTRAINT DF_N8nAccounts_TotalWorkflows DEFAULT (0),
+    TotalExecutions BIGINT NOT NULL CONSTRAINT DF_N8nAccounts_TotalExecutions DEFAULT (0),
+    SuccessfulExecutions BIGINT NOT NULL CONSTRAINT DF_N8nAccounts_SuccessExecutions DEFAULT (0),
+    FailedExecutions BIGINT NOT NULL CONSTRAINT DF_N8nAccounts_FailedExecutions DEFAULT (0),
+    MonthlyExecutions INT NOT NULL CONSTRAINT DF_N8nAccounts_MonthlyExecutions DEFAULT (0),
+    MaxMonthlyExecutions INT NOT NULL CONSTRAINT DF_N8nAccounts_MaxMonthlyExecutions DEFAULT (1000),
+    MonthlyResetDate DATETIME2 NULL,
+    LastExecutionAt DATETIME2 NULL,
     Created_at DATETIME2 NOT NULL CONSTRAINT DF_N8nAccounts_Created_at DEFAULT (SYSUTCDATETIME()),
     Updated_at DATETIME2 NULL,
     Provisioned_at DATETIME2 NULL,
@@ -1603,7 +1614,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status, Credential, AccessType,
+           ActiveWorkflowsCount, TotalWorkflowsCount, TotalExecutions,
+           SuccessfulExecutions, FailedExecutions, MonthlyExecutions, MaxMonthlyExecutions,
+           MonthlyResetDate, LastExecutionAt,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt,
            Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
            LastSyncedAt, LastErrorMessage
@@ -1621,7 +1635,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status, Credential, AccessType,
+           ActiveWorkflowsCount, TotalWorkflowsCount, TotalExecutions,
+           SuccessfulExecutions, FailedExecutions, MonthlyExecutions, MaxMonthlyExecutions,
+           MonthlyResetDate, LastExecutionAt,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt,
            Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
            LastSyncedAt, LastErrorMessage
@@ -1639,7 +1656,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status, Credential, AccessType,
+           ActiveWorkflowsCount, TotalWorkflowsCount, TotalExecutions,
+           SuccessfulExecutions, FailedExecutions, MonthlyExecutions, MaxMonthlyExecutions,
+           MonthlyResetDate, LastExecutionAt,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt,
            Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
            LastSyncedAt, LastErrorMessage
@@ -1657,7 +1677,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status,
+    SELECT Id, UserId, ExternalUserRef, Email, AccountId, Status, Credential, AccessType,
+           ActiveWorkflowsCount, TotalWorkflowsCount, TotalExecutions,
+           SuccessfulExecutions, FailedExecutions, MonthlyExecutions, MaxMonthlyExecutions,
+           MonthlyResetDate, LastExecutionAt,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt,
            Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
            LastSyncedAt, LastErrorMessage
@@ -1675,7 +1698,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT TOP (1) Id, UserId, ExternalUserRef, Email, AccountId, Status,
+    SELECT TOP (1) Id, UserId, ExternalUserRef, Email, AccountId, Status, Credential, AccessType,
+           ActiveWorkflowsCount, TotalWorkflowsCount, TotalExecutions,
+           SuccessfulExecutions, FailedExecutions, MonthlyExecutions, MaxMonthlyExecutions,
+           MonthlyResetDate, LastExecutionAt,
            Created_at AS CreatedAt, Updated_at AS UpdatedAt,
            Provisioned_at AS ProvisionedAt, Revoked_at AS RevokedAt,
            LastSyncedAt, LastErrorMessage
@@ -1725,13 +1751,17 @@ END
 CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_MarkProvisioned
     @Id INT,
     @UserId INT,
-    @AccountId NVARCHAR(128)
+    @AccountId NVARCHAR(128),
+    @Credential NVARCHAR(2048) = NULL,
+    @AccessType NVARCHAR(50) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
 
     UPDATE dbo.N8nAccounts
     SET AccountId = @AccountId,
+        Credential = COALESCE(@Credential, Credential),
+        AccessType = COALESCE(@AccessType, AccessType),
         Status = 'Active',
         Provisioned_at = SYSUTCDATETIME(),
         Updated_at = SYSUTCDATETIME(),
@@ -1790,5 +1820,42 @@ BEGIN
     WHERE Id = @Id
       AND UserId = @UserId
       AND Revoked_at IS NULL;
+END
+```
+
+#### 12.2.10 `usp_N8nAccounts_UpdateMetrics`
+
+```sql
+CREATE OR ALTER PROCEDURE dbo.usp_N8nAccounts_UpdateMetrics
+    @Id INT,
+    @ActiveWorkflowsCount INT = 0,
+    @TotalWorkflowsCount INT = 0,
+    @TotalExecutions BIGINT = 0,
+    @SuccessfulExecutions BIGINT = 0,
+    @FailedExecutions BIGINT = 0,
+    @MonthlyExecutions INT = 0,
+    @LastExecutionAt DATETIME2 = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.N8nAccounts
+    SET ActiveWorkflowsCount = @ActiveWorkflowsCount,
+        TotalWorkflowsCount = @TotalWorkflowsCount,
+        TotalExecutions = @TotalExecutions,
+        SuccessfulExecutions = @SuccessfulExecutions,
+        FailedExecutions = @FailedExecutions,
+        MonthlyExecutions = @MonthlyExecutions,
+        LastExecutionAt = COALESCE(@LastExecutionAt, LastExecutionAt),
+        LastSyncedAt = SYSUTCDATETIME(),
+        Updated_at = SYSUTCDATETIME()
+    WHERE Id = @Id AND Revoked_at IS NULL;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        RETURN;
+    END
+
+    EXEC dbo.usp_N8nAccounts_GetById @Id = @Id;
 END
 ```
