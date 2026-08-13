@@ -31,6 +31,10 @@ public class PlatformMetricsService : IPlatformMetricsService
             TotalUsers = reader.GetInt32Value("TotalUsers"),
             TotalDatabases = reader.GetInt32Value("TotalDatabases"),
             ActiveDatabases = reader.GetInt32Value("ActiveDatabases"),
+            TotalSubdomains = reader.GetInt32Value("TotalSubdomains"),
+            TotalAiRequests = reader.GetInt64Value("TotalAiRequests"),
+            TotalN8nExecutions = reader.GetInt64Value("TotalN8nExecutions"),
+            TotalSecureOperations = reader.GetInt32Value("TotalSecureOperations"),
             TotalLogins = reader.GetInt32Value("TotalLogins"),
             ActiveUsers = reader.GetInt32Value("ActiveUsers"),
             ServiceAvailability = _availabilityTracker.GetAvailabilityPercent()
