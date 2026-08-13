@@ -65,10 +65,11 @@ public class AuthRecoveryEmailService : IAuthRecoveryEmailService
 </body>
 </html>";
 
-        // Si Smtp no está habilitado o no tiene Host configurado, logueamos el correo para pruebas locales.
+        // Si Smtp no está habilitado o no tiene Host configurado, no exponemos la contraseña
+        // temporal en logs; solo dejamos trazabilidad del fallo de entrega.
         if (!_smtpOptions.EnableSmtp || string.IsNullOrWhiteSpace(_smtpOptions.Host))
         {
-            _logger.LogInformation("SMTP disabled/unconfigured. Password reset for {Email} ({Name}): {NewPassword}", email, name, newPassword);
+            _logger.LogWarning("SMTP disabled or unconfigured. Password reset email was not sent to {Email} ({Name}).", email, name);
             return;
         }
 
@@ -100,7 +101,7 @@ public class AuthRecoveryEmailService : IAuthRecoveryEmailService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send password reset email via SMTP to {Email}. Fallback log password: {NewPassword}", email, newPassword);
+            _logger.LogError(ex, "Failed to send password reset email via SMTP to {Email}.", email);
             // No bloqueamos el flujo principal si el servidor SMTP falla, la clave ya fue cambiada en la BD.
         }
     }

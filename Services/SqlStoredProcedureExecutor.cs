@@ -81,7 +81,7 @@ public class SqlStoredProcedureExecutor : ISqlStoredProcedureExecutor
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error executing stored procedure {StoredProcedure}", storedProcedureName);
+            _logger.LogError(ex, "Error executing stored procedure.");
             throw;
         }
         finally
@@ -119,7 +119,7 @@ public class SqlStoredProcedureExecutor : ISqlStoredProcedureExecutor
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error querying stored procedure {StoredProcedure}", storedProcedureName);
+            _logger.LogError(ex, "Error querying stored procedure.");
             throw;
         }
         finally

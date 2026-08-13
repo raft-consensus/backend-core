@@ -126,7 +126,7 @@ Tras procesar el login, `GET /api/auth/callback/{provider}` **no devuelve JSON**
 http://localhost:4200/auth/callback#access_token=<jwt>&expires_at=<iso8601>&provider=<Google|GitHub>
 ```
 
-El frontend tiene que tener una ruta montada en **`/auth/callback`** que, al cargar, lea `window.location.hash` (no query params — van después del `#`, a propósito, para que nunca se manden a ningún servidor ni queden en logs), extraiga `access_token`, y guarde la sesión.
+El frontend tiene que tener una ruta montada en **`/auth/callback`** que, al cargar, lea `window.location.hash`, extraiga `access_token`, y guarde la sesión.
 
 Si algo falla, el redirect trae `#error=<código>` en vez de `access_token`:
 
@@ -173,6 +173,23 @@ Para el frontend, la regla es:
 
 - `hasLocalPassword = false` => ocultar o deshabilitar recuperar/cambiar contraseña;
 - `hasLocalPassword = true` => permitir esas acciones solo para la cuenta autenticada.
+
+### `POST /api/auth/forgot-password`
+
+Público. Genera una contraseña temporal, la persiste hasheada como la nueva contraseña local del usuario y trata de enviarla por email.
+
+- La contraseña temporal no se escribe en logs.
+- Si SMTP está deshabilitado o el envío falla, el backend solo registra un warning/error genérico.
+- La implementación actual mantiene la respuesta genérica de éxito aunque el envío falle, así que este flujo depende de tener SMTP operativo en producción.
+
+Ejemplo de respuesta:
+
+```json
+{
+  "success": true,
+  "message": "If the account is eligible, a temporary password was sent."
+}
+```
 
 ---
 
@@ -361,6 +378,8 @@ Body de ejemplo:
 ```
 
 El backend construye el hostname como `label.cellSubdomain.zoneName`. Con la configuración de ejemplo, `testdb` termina como `testdb.raft.andrescortes.dev`.
+
+Nota: el controlador también acepta `POST /api/me/dns` como alias del mismo flujo.
 
 La llamada que te enviaron por chat es exactamente el equivalente manual de este flujo:
 

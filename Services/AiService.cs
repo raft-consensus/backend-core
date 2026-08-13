@@ -181,7 +181,7 @@ public class AiService : IAiService
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Remote AI provider {Provider} returned HTTP {StatusCode}: {ResponseBody}", provider.Name, (int)response.StatusCode, responseBody);
+            _logger.LogWarning("Remote AI provider {Provider} returned HTTP {StatusCode}.", provider.Name, (int)response.StatusCode);
         }
 
         using var document = JsonDocument.Parse(responseBody);
