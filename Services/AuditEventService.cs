@@ -22,6 +22,19 @@ public class AuditEventService : IAuditEventService
             cancellationToken).ContinueWith(static task => (IReadOnlyList<AuditEventReadDto>)task.Result, cancellationToken);
     }
 
+    public Task<IReadOnlyList<AuditEventReadDto>> GetByUserIdAsync(int userId, int limit = 20, CancellationToken cancellationToken = default)
+    {
+        return _executor.QueryAsync(
+            StoredProcedureNames.AuditEvents_GetByUserId,
+            command =>
+            {
+                command.AddParameter("@UserId", userId);
+                command.AddParameter("@Limit", limit);
+            },
+            Map,
+            cancellationToken).ContinueWith(static task => (IReadOnlyList<AuditEventReadDto>)task.Result, cancellationToken);
+    }
+
     public Task<AuditEventReadDto?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
     {
         return _executor.QuerySingleOrDefaultAsync(

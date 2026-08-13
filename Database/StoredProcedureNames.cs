@@ -34,6 +34,7 @@ public static class StoredProcedureNames
 
     public const string AuditEvents_GetAll = "usp_AuditEvents_GetAll";
     public const string AuditEvents_GetById = "usp_AuditEvents_GetById";
+    public const string AuditEvents_GetByUserId = "usp_AuditEvents_GetByUserId";
     public const string AuditEvents_Create = "usp_AuditEvents_Create";
     public const string AuditEvents_Update = "usp_AuditEvents_Update";
     public const string AuditEvents_SoftDelete = "usp_AuditEvents_SoftDelete";
