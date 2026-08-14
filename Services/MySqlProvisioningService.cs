@@ -99,6 +99,8 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
             Description = $"MySQL database '{abaResponse.NombreBD}' provisioned through ABA partner cell."
         }, cancellationToken);
 
+        _cacheExpiresAt = DateTime.MinValue;
+
         return new MySqlProvisioningResultDto
         {
             DatabaseInstanceId = instance.Id,
@@ -165,6 +167,10 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
             {
                 _logger.LogWarning(ex, "Failed to rotate credentials on ABA MySQL for {DatabaseName} during soft-delete", instance.DatabaseName);
             }
+            finally
+            {
+                _cacheExpiresAt = DateTime.MinValue;
+            }
         }
 
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
@@ -193,6 +199,10 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to purge database {DatabaseName} on ABA MySQL", instance.DatabaseName);
+            }
+            finally
+            {
+                _cacheExpiresAt = DateTime.MinValue;
             }
         }
 
@@ -241,6 +251,11 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         return client;
     }
 
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(2);
+    private static List<AbaDatabaseItemDto>? _cachedList;
+    private static DateTime _cacheExpiresAt = DateTime.MinValue;
+    private static readonly SemaphoreSlim _cacheLock = new(1, 1);
+
     private async Task<int?> GetAbaDatabaseIdByNameAsync(string databaseName, CancellationToken cancellationToken)
     {
         var item = await GetAbaDatabaseByNameAsync(databaseName, cancellationToken);
@@ -249,16 +264,49 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
 
     private async Task<AbaDatabaseItemDto?> GetAbaDatabaseByNameAsync(string databaseName, CancellationToken cancellationToken)
     {
-        using var client = CreateHttpClient();
-        var response = await client.GetAsync("partners/databases", cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        var list = await GetAllAbaDatabasesAsync(cancellationToken);
+        return list.FirstOrDefault(d => string.Equals(d.NombreBD, databaseName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<List<AbaDatabaseItemDto>> GetAllAbaDatabasesAsync(CancellationToken cancellationToken)
+    {
+        if (_cachedList is not null && DateTime.UtcNow < _cacheExpiresAt)
         {
-            return null;
+            return _cachedList;
         }
 
-        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-        var list = JsonSerializer.Deserialize<List<AbaDatabaseItemDto>>(responseBody, JsonOptions);
-        return list?.FirstOrDefault(d => string.Equals(d.NombreBD, databaseName, StringComparison.OrdinalIgnoreCase));
+        await _cacheLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cachedList is not null && DateTime.UtcNow < _cacheExpiresAt)
+            {
+                return _cachedList;
+            }
+
+            using var client = CreateHttpClient();
+            var response = await client.GetAsync("partners/databases", cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                _cachedList = JsonSerializer.Deserialize<List<AbaDatabaseItemDto>>(responseBody, JsonOptions) ?? new();
+                _cacheExpiresAt = DateTime.UtcNow.Add(CacheTtl);
+                return _cachedList;
+            }
+            else
+            {
+                _logger.LogWarning("ABA MySQL GET /partners/databases returned HTTP {StatusCode}", (int)response.StatusCode);
+                return _cachedList ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch databases from ABA MySQL API");
+            return _cachedList ?? new();
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
     }
 
     private async Task UpdateStatusAsync(
