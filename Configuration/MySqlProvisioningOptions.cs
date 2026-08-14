@@ -4,8 +4,17 @@ namespace raft_backend.Configuration;
 
 public class MySqlProvisioningOptions
 {
+    [Required, Url]
+    public string BaseUrl { get; set; } = "https://api.aba.andrescortes.dev";
+
     [Required]
-    public string PublicHost { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+
+    [Range(1, 120)]
+    public int RequestTimeoutSeconds { get; set; } = 30;
+
+    [Required]
+    public string PublicHost { get; set; } = "db.aba.andrescortes.dev";
 
     [Range(1, 65535)]
     public int PublicPort { get; set; } = 3306;

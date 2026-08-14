@@ -128,13 +128,73 @@ public class MongoProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        await UpdateStatusAsync(databaseInstanceId, instance, "Paused", cancellationToken);
+        if (!string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
+        {
+            try
+            {
+                var client = new MongoClient(_connectionStrings.MongoProvisioning);
+                var targetDb = client.GetDatabase(instance.DatabaseName);
+
+                // Cambiar el rol del usuario a solo lectura (read)
+                var updateUserCommand = new BsonDocument
+                {
+                    { "updateUser", instance.DatabaseUser },
+                    { "roles", new BsonArray
+                        {
+                            new BsonDocument
+                            {
+                                { "role", "read" },
+                                { "db", instance.DatabaseName }
+                            }
+                        }
+                    }
+                };
+
+                await targetDb.RunCommandAsync<BsonDocument>(updateUserCommand, cancellationToken: cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to set read-only role on MongoDB database {DatabaseName}", instance.DatabaseName);
+            }
+        }
+
+        await UpdateStatusAsync(databaseInstanceId, instance, "Suspended", cancellationToken);
     }
 
     public async Task ResumeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
     {
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
+        if (!string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
+        {
+            try
+            {
+                var client = new MongoClient(_connectionStrings.MongoProvisioning);
+                var targetDb = client.GetDatabase(instance.DatabaseName);
+
+                // Restaurar el rol del usuario a lectura y escritura (readWrite)
+                var updateUserCommand = new BsonDocument
+                {
+                    { "updateUser", instance.DatabaseUser },
+                    { "roles", new BsonArray
+                        {
+                            new BsonDocument
+                            {
+                                { "role", "readWrite" },
+                                { "db", instance.DatabaseName }
+                            }
+                        }
+                    }
+                };
+
+                await targetDb.RunCommandAsync<BsonDocument>(updateUserCommand, cancellationToken: cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to restore readWrite role on MongoDB database {DatabaseName}", instance.DatabaseName);
+            }
+        }
 
         await UpdateStatusAsync(databaseInstanceId, instance, "Active", cancellationToken);
     }
@@ -143,6 +203,27 @@ public class MongoProvisioningService : IDatabaseProvisioningService
     {
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+
+        if (!string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
+        {
+            try
+            {
+                var client = new MongoClient(_connectionStrings.MongoProvisioning);
+                var targetDb = client.GetDatabase(instance.DatabaseName);
+
+                // Eliminar el usuario de MongoDB para revocarle todo acceso de inmediato
+                var dropUserCommand = new BsonDocument
+                {
+                    { "dropUser", instance.DatabaseUser }
+                };
+
+                await targetDb.RunCommandAsync<BsonDocument>(dropUserCommand, cancellationToken: cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to drop MongoDB user {DatabaseUser} from {DatabaseName}", instance.DatabaseUser, instance.DatabaseName);
+            }
+        }
 
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
     }
@@ -168,14 +249,65 @@ public class MongoProvisioningService : IDatabaseProvisioningService
         await UpdateStatusAsync(databaseInstanceId, instance, "Deleted", cancellationToken);
     }
 
-    public Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
+    public async Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(0L);
+        if (string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
+        {
+            return 0L;
+        }
+
+        try
+        {
+            var client = new MongoClient(_connectionStrings.MongoProvisioning);
+            var targetDb = client.GetDatabase(databaseName);
+            var stats = await targetDb.RunCommandAsync<BsonDocument>(new BsonDocument("dbStats", 1), cancellationToken: cancellationToken);
+
+            if (stats.Contains("dataSize"))
+            {
+                return stats["dataSize"].ToInt64();
+            }
+            if (stats.Contains("storageSize"))
+            {
+                return stats["storageSize"].ToInt64();
+            }
+            if (stats.Contains("totalSize"))
+            {
+                return stats["totalSize"].ToInt64();
+            }
+
+            return 0L;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to calculate used space for MongoDB database {DatabaseName}", databaseName);
+            return 0L;
+        }
     }
 
-    public Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
+    public async Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(0);
+        if (string.IsNullOrWhiteSpace(_connectionStrings.MongoProvisioning))
+        {
+            return 0;
+        }
+
+        try
+        {
+            var client = new MongoClient(_connectionStrings.MongoProvisioning);
+            var adminDb = client.GetDatabase("admin");
+            var status = await adminDb.RunCommandAsync<BsonDocument>(new BsonDocument("serverStatus", 1), cancellationToken: cancellationToken);
+
+            if (status.Contains("connections") && status["connections"].AsBsonDocument.Contains("current"))
+            {
+                return status["connections"]["current"].ToInt32();
+            }
+
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private async Task UpdateStatusAsync(

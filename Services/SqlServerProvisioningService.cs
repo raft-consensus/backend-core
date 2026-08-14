@@ -163,8 +163,6 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
 
         ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
         await DisconnectDatabaseSessionsAsync(instance.DatabaseName, cancellationToken);
-        await SetDatabaseReadWriteAsync(instance.DatabaseName, cancellationToken);
-        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
         await SetDatabaseReadOnlyAsync(instance.DatabaseName, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
     }
@@ -182,8 +180,8 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         }
 
         ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
+        await DisconnectDatabaseSessionsAsync(instance.DatabaseName, cancellationToken);
         await SetDatabaseReadWriteAsync(instance.DatabaseName, cancellationToken);
-        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: true, cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
     }
 
@@ -192,8 +190,20 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        // Revocar permisos de conexión al usuario para que no pueda interactuar con la BD huérfana
-        await SetDatabaseConnectPermissionAsync(instance.DatabaseName, instance.DatabaseUser, allowConnect: false, cancellationToken);
+        if (await DatabaseExistsAsync(instance.DatabaseName, cancellationToken))
+        {
+            ValidateDatabaseIdentifiers(instance.DatabaseName, instance.DatabaseUser);
+            await DisconnectDatabaseSessionsAsync(instance.DatabaseName, cancellationToken);
+            await SetDatabaseReadWriteAsync(instance.DatabaseName, cancellationToken);
+
+            // Reasignar la propiedad a raft_backend para que desaparezca inmediatamente del DBeaver del usuario
+            await _sqlServerExecutor.ExecuteNonQueryAsync(
+                $"ALTER AUTHORIZATION ON DATABASE::[{instance.DatabaseName}] TO [raft_backend];",
+                null,
+                cancellationToken);
+
+            await SetDatabaseReadOnlyAsync(instance.DatabaseName, cancellationToken);
+        }
 
         // Marcar la instancia como Orphaned y liberar la cuota en los Stored Procedures
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
@@ -261,9 +271,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
 
             await _sqlServerExecutor.ExecuteNonQueryAsync(
                 $"""
-                 USE [{identifier}];
-                 CREATE USER [{loginName}] FOR LOGIN [{loginName}];
-                 ALTER ROLE [db_owner] ADD MEMBER [{loginName}];
+                 ALTER AUTHORIZATION ON DATABASE::[{identifier}] TO [{loginName}];
                  """,
                 null,
                 cancellationToken);
@@ -332,21 +340,6 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
         {
             _logger.LogError(cleanupEx, "Best-effort SQL Server cleanup failed for identifier {Identifier}; manual cleanup required", identifier);
         }
-    }
-
-    private async Task SetDatabaseConnectPermissionAsync(
-        string databaseName,
-        string loginName,
-        bool allowConnect,
-        CancellationToken cancellationToken)
-    {
-        ValidateDatabaseIdentifiers(databaseName, loginName);
-
-        var commandText = allowConnect
-            ? $"USE [{databaseName}]; REVOKE CONNECT FROM [{loginName}];"
-            : $"USE [{databaseName}]; DENY CONNECT TO [{loginName}];";
-
-        await _sqlServerExecutor.ExecuteNonQueryAsync(commandText, null, cancellationToken);
     }
 
     public async Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
@@ -419,7 +412,7 @@ public partial class SqlServerProvisioningService : ISqlServerProvisioningServic
             $"""
              IF DB_ID(N'{databaseName}') IS NOT NULL
              BEGIN
-                 ALTER DATABASE [{databaseName}] SET READ_WRITE;
+                 ALTER DATABASE [{databaseName}] SET READ_WRITE WITH ROLLBACK IMMEDIATE;
              END
              """,
             null,

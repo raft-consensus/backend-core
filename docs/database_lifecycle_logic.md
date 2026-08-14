@@ -1,5 +1,3 @@
-leaeaclc
-
 # Lógica Definitiva del Ciclo de Vida de Bases de Datos (Raft-DB Platform)
 
 ## 📌 1. Visión General de la Estrategia

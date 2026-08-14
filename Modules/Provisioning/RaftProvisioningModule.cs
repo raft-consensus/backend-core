@@ -9,6 +9,7 @@ public static class RaftProvisioningModule
 {
     public static void AddRaftProvisioningModule(this WebApplicationBuilder builder)
     {
+        builder.Services.AddHttpClient("AbaMySql");
         builder.Services.AddScoped<ISqlServerProvisioningService, SqlServerProvisioningService>();
         builder.Services.AddScoped<IDatabaseProvisioningService, SqlServerProvisioningService>();
         builder.Services.AddScoped<IDatabaseProvisioningService, MySqlProvisioningService>();

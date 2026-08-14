@@ -138,7 +138,10 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseUser);
         await KillSessionsAsync(instance.DatabaseName, cancellationToken);
         await ExecuteAsync(
-            $"""REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";""",
+            $"""
+             ALTER DATABASE "{instance.DatabaseName}" SET default_transaction_read_only = on;
+             REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";
+             """,
             null,
             cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
@@ -151,8 +154,12 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
 
         ValidateIdentifier(instance.DatabaseName);
         ValidateIdentifier(instance.DatabaseUser);
+        await KillSessionsAsync(instance.DatabaseName, cancellationToken);
         await ExecuteAsync(
-            $"""GRANT CONNECT ON DATABASE "{instance.DatabaseName}" TO "{instance.DatabaseUser}";""",
+            $"""
+             ALTER DATABASE "{instance.DatabaseName}" SET default_transaction_read_only = off;
+             GRANT CONNECT ON DATABASE "{instance.DatabaseName}" TO "{instance.DatabaseUser}";
+             """,
             null,
             cancellationToken);
         await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
@@ -166,8 +173,16 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseName);
         ValidateIdentifier(instance.DatabaseUser);
 
+        await KillSessionsAsync(instance.DatabaseName, cancellationToken);
+
+        // Reasignar la propiedad a raft_pg_admin y revocar todos los permisos para que desaparezca de la vista del usuario
         await ExecuteAsync(
-            $"""REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";""",
+            $"""
+             ALTER DATABASE "{instance.DatabaseName}" OWNER TO "raft_pg_admin";
+             REVOKE ALL ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";
+             REVOKE CONNECT ON DATABASE "{instance.DatabaseName}" FROM "{instance.DatabaseUser}";
+             ALTER DATABASE "{instance.DatabaseName}" SET default_transaction_read_only = on;
+             """,
             null,
             cancellationToken);
 
@@ -185,6 +200,7 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
         ValidateIdentifier(instance.DatabaseName);
         ValidateIdentifier(instance.DatabaseUser);
 
+        await KillSessionsAsync(instance.DatabaseName, cancellationToken);
         await ExecuteAsync($"""DROP DATABASE IF EXISTS "{instance.DatabaseName}";""", null, cancellationToken);
 
         if (isLastDatabase)
@@ -269,6 +285,8 @@ public partial class PostgresProvisioningService : IDatabaseProvisioningService
             null,
             cancellationToken);
         await ExecuteAsync($"""CREATE DATABASE "{databaseName}" OWNER "{loginName}";""", null, cancellationToken);
+        await ExecuteAsync($"""REVOKE ALL ON DATABASE "{databaseName}" FROM PUBLIC;""", null, cancellationToken);
+        await ExecuteAsync($"""REVOKE CONNECT ON DATABASE "{databaseName}" FROM PUBLIC;""", null, cancellationToken);
         await ExecuteAsync(
             $"""GRANT CONNECT ON DATABASE "{databaseName}" TO "{loginName}";""",
             null,

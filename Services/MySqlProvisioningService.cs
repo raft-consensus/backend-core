@@ -1,12 +1,10 @@
-using System.Data;
-using System.Data.Common;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
-using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
-using MySql.Data.MySqlClient;
 using raft_backend.Configuration;
-using raft_backend.Database;
 using raft_backend.DTOs;
 using raft_backend.Interfaces;
 
@@ -18,10 +16,9 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
     private readonly IAccessCredentialService _accessCredentialService;
     private readonly IAuditEventService _auditEventService;
     private readonly IDatabaseInstanceService _databaseInstanceService;
-    private readonly ISecurePasswordGenerator _passwordGenerator;
     private readonly IDataProtectionProvider _dataProtectionProvider;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly MySqlProvisioningOptions _options;
-    private readonly ExternalCellConnectionStrings _connectionStrings;
     private readonly ILogger<MySqlProvisioningService> _logger;
 
     public MySqlProvisioningService(
@@ -29,104 +26,89 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         IAccessCredentialService accessCredentialService,
         IAuditEventService auditEventService,
         IDatabaseInstanceService databaseInstanceService,
-        ISecurePasswordGenerator passwordGenerator,
         IDataProtectionProvider dataProtectionProvider,
+        IHttpClientFactory httpClientFactory,
         IOptions<MySqlProvisioningOptions> options,
-        IOptions<ExternalCellConnectionStrings> connectionStrings,
         ILogger<MySqlProvisioningService> logger)
     {
         _dashboardService = dashboardService;
         _accessCredentialService = accessCredentialService;
         _auditEventService = auditEventService;
         _databaseInstanceService = databaseInstanceService;
-        _passwordGenerator = passwordGenerator;
         _dataProtectionProvider = dataProtectionProvider;
+        _httpClientFactory = httpClientFactory;
         _options = options.Value;
-        _connectionStrings = connectionStrings.Value;
         _logger = logger;
     }
 
     public string Engine => "MySQL";
 
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_connectionStrings.MySqlProvisioning);
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(_options.ApiKey) && !string.IsNullOrWhiteSpace(_options.BaseUrl);
 
     public int MaxDatabasesPerUser => _options.MaxDatabasesPerUser;
 
     public async Task<DatabaseProvisioningResultDto> ProvisionDatabaseAsync(int userId, CancellationToken cancellationToken = default)
     {
-        var sharedState = await GetSharedProvisioningStateAsync(userId, cancellationToken);
+        if (!IsAvailable)
+        {
+            throw new InvalidOperationException("MySQL Provisioning via ABA partner cell is not configured or disabled.");
+        }
+
+        using var client = CreateHttpClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "partners/databases");
+        var response = await client.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("ABA MySQL provisioning returned HTTP {StatusCode}: {Body}", (int)response.StatusCode, responseBody);
+            throw new InvalidOperationException($"ABA MySQL provisioning failed: {responseBody}");
+        }
+
+        var abaResponse = JsonSerializer.Deserialize<AbaCreateDatabaseResponseDto>(responseBody, JsonOptions)
+            ?? throw new InvalidOperationException("ABA MySQL provisioning returned an empty or invalid payload.");
+
         var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
-        var sharedLoginName = sharedState.SharedLoginName;
-        string password;
-        if (sharedState.EncryptedPassword is null)
+        var encryptedPassword = protector.Protect(abaResponse.PasswordTemporal);
+
+        var instance = await _databaseInstanceService.CreateAsync(new DatabaseInstanceCreateDto
         {
-            password = _passwordGenerator.Generate(_options.PasswordLength);
-        }
-        else
+            UserId = userId,
+            Host = !string.IsNullOrWhiteSpace(abaResponse.Host) ? abaResponse.Host : _options.PublicHost,
+            Port = abaResponse.Puerto > 0 ? abaResponse.Puerto : _options.PublicPort,
+            DatabaseName = abaResponse.NombreBD,
+            DatabaseUser = abaResponse.UsuarioBD,
+            Engine = Engine,
+            Status = "Active",
+            UsedSpaceBytes = 0,
+            MaxSpaceBytes = _options.DefaultMaxSpaceBytes,
+            LastActivity = DateTime.UtcNow
+        }, cancellationToken) ?? throw new InvalidOperationException("Failed to persist the provisioned MySQL database instance.");
+
+        await _accessCredentialService.CreateAsync(new AccessCredentialCreateDto
         {
-            try
-            {
-                password = protector.Unprotect(sharedState.EncryptedPassword);
-            }
-            catch (CryptographicException)
-            {
-                password = _passwordGenerator.Generate(_options.PasswordLength);
-            }
-        }
+            DatabaseInstanceId = instance.Id,
+            EncryptedPassword = encryptedPassword
+        }, cancellationToken);
 
-        var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
-        var identifier = $"raft_u{userId}_{suffix}";
-        ValidateIdentifier(identifier);
-
-        try
+        await _auditEventService.CreateAsync(new AuditEventCreateDto
         {
-            await CreateDatabaseAndUserAsync(identifier, sharedLoginName, password, cancellationToken);
+            UserId = userId,
+            EventType = "Provisioning",
+            Description = $"MySQL database '{abaResponse.NombreBD}' provisioned through ABA partner cell."
+        }, cancellationToken);
 
-            var encryptedPassword = protector.Protect(password);
-            var instance = await _databaseInstanceService.CreateAsync(new DatabaseInstanceCreateDto
-            {
-                UserId = userId,
-                Host = _options.PublicHost,
-                Port = _options.PublicPort,
-                DatabaseName = identifier,
-                DatabaseUser = sharedLoginName,
-                Engine = Engine,
-                Status = "Active",
-                UsedSpaceBytes = 0,
-                MaxSpaceBytes = _options.DefaultMaxSpaceBytes,
-                LastActivity = null
-            }, cancellationToken) ?? throw new InvalidOperationException("Failed to persist the provisioned database instance.");
-
-            await _accessCredentialService.CreateAsync(new AccessCredentialCreateDto
-            {
-                DatabaseInstanceId = instance.Id,
-                EncryptedPassword = encryptedPassword
-            }, cancellationToken);
-
-            await _auditEventService.CreateAsync(new AuditEventCreateDto
-            {
-                UserId = userId,
-                EventType = "Provisioning",
-                Description = $"MySQL database '{identifier}' provisioned through self-service."
-            }, cancellationToken);
-
-            return new MySqlProvisioningResultDto
-            {
-                DatabaseInstanceId = instance.Id,
-                Host = _options.PublicHost,
-                Port = _options.PublicPort,
-                DatabaseName = identifier,
-                DatabaseUser = sharedLoginName,
-                Password = password,
-                Engine = Engine
-            };
-        }
-        catch (Exception ex)
+        return new MySqlProvisioningResultDto
         {
-            _logger.LogError(ex, "Failed to provision MySQL database for {Identifier}", identifier);
-            await SafeDeleteDatabaseAndUserAsync(identifier, sharedLoginName, userId, CancellationToken.None);
-            throw;
-        }
+            DatabaseInstanceId = instance.Id,
+            Host = instance.Host,
+            Port = instance.Port,
+            DatabaseName = instance.DatabaseName,
+            DatabaseUser = instance.DatabaseUser,
+            Password = abaResponse.PasswordTemporal,
+            Engine = Engine
+        };
     }
 
     public async Task PauseAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
@@ -134,15 +116,7 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        ValidateIdentifier(instance.DatabaseName);
-        ValidateIdentifier(instance.DatabaseUser);
-        await KillSessionsAsync(instance.DatabaseName, instance.DatabaseUser, cancellationToken);
-        await ExecuteAsync(
-            $"""REVOKE ALL PRIVILEGES ON `{instance.DatabaseName}`.* FROM '{instance.DatabaseUser}'@'%';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync("FLUSH PRIVILEGES;", null, cancellationToken);
-        await UpdateStatusAsync(databaseInstanceId, "Suspended", cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Suspended", cancellationToken);
     }
 
     public async Task ResumeAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
@@ -150,14 +124,7 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        ValidateIdentifier(instance.DatabaseName);
-        ValidateIdentifier(instance.DatabaseUser);
-        await ExecuteAsync(
-            $"""GRANT ALL PRIVILEGES ON `{instance.DatabaseName}`.* TO '{instance.DatabaseUser}'@'%';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync("FLUSH PRIVILEGES;", null, cancellationToken);
-        await UpdateStatusAsync(databaseInstanceId, "Active", cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Active", cancellationToken);
     }
 
     public async Task DeleteAsync(int databaseInstanceId, CancellationToken cancellationToken = default)
@@ -165,14 +132,40 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        ValidateIdentifier(instance.DatabaseName);
-        ValidateIdentifier(instance.DatabaseUser);
-
-        await ExecuteAsync(
-            $"""REVOKE ALL PRIVILEGES ON `{instance.DatabaseName}`.* FROM '{instance.DatabaseUser}'@'%';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync("FLUSH PRIVILEGES;", null, cancellationToken);
+        if (IsAvailable)
+        {
+            try
+            {
+                var abaId = await GetAbaDatabaseIdByNameAsync(instance.DatabaseName, cancellationToken);
+                if (abaId.HasValue)
+                {
+                    using var client = CreateHttpClient();
+                    var resetResponse = await client.PostAsync($"partners/databases/{abaId.Value}/credenciales/reset", null, cancellationToken);
+                    if (resetResponse.IsSuccessStatusCode)
+                    {
+                        var resetBody = await resetResponse.Content.ReadAsStringAsync(cancellationToken);
+                        var resetData = JsonSerializer.Deserialize<AbaResetPasswordResponseDto>(resetBody, JsonOptions);
+                        if (resetData is not null && !string.IsNullOrWhiteSpace(resetData.PasswordNueva))
+                        {
+                            var cred = await _accessCredentialService.GetByDatabaseInstanceIdAsync(databaseInstanceId, cancellationToken);
+                            if (cred is not null)
+                            {
+                                var protector = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
+                                var encryptedPassword = protector.Protect(resetData.PasswordNueva);
+                                await _accessCredentialService.UpdateAsync(cred.Id, new AccessCredentialUpdateDto
+                                {
+                                    EncryptedPassword = encryptedPassword
+                                }, cancellationToken);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to rotate credentials on ABA MySQL for {DatabaseName} during soft-delete", instance.DatabaseName);
+            }
+        }
 
         await _databaseInstanceService.SoftDeleteAsync(databaseInstanceId, cancellationToken);
     }
@@ -182,147 +175,98 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
         var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
             ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
 
-        var owned = await _dashboardService.GetByUserIdAsync(instance.UserId, cancellationToken);
-        var isLastDatabase = owned.Count <= 1;
-
-        ValidateIdentifier(instance.DatabaseName);
-        ValidateIdentifier(instance.DatabaseUser);
-
-        await ExecuteAsync($"""DROP DATABASE IF EXISTS `{instance.DatabaseName}`;""", null, cancellationToken);
-
-        if (isLastDatabase)
+        if (IsAvailable)
         {
-            await ExecuteAsync($"""DROP USER IF EXISTS '{instance.DatabaseUser}'@'%';""", null, cancellationToken);
+            try
+            {
+                var abaId = await GetAbaDatabaseIdByNameAsync(instance.DatabaseName, cancellationToken);
+                if (abaId.HasValue)
+                {
+                    using var client = CreateHttpClient();
+                    var deleteResponse = await client.DeleteAsync($"partners/databases/{abaId.Value}", cancellationToken);
+                    if (!deleteResponse.IsSuccessStatusCode)
+                    {
+                        _logger.LogWarning("ABA MySQL delete returned status {StatusCode} for DB {DatabaseName}", deleteResponse.StatusCode, instance.DatabaseName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to purge database {DatabaseName} on ABA MySQL", instance.DatabaseName);
+            }
         }
 
-        await UpdateStatusAsync(databaseInstanceId, "Deleted", cancellationToken);
+        await UpdateStatusAsync(databaseInstanceId, instance, "Deleted", cancellationToken);
     }
 
     public async Task<long> GetUsedSpaceBytesAsync(string databaseName, CancellationToken cancellationToken = default)
     {
-        ValidateIdentifier(databaseName);
-
-        var results = await QueryAsync(
-            """
-            SELECT COALESCE(SUM(data_length + index_length), 0) AS UsedBytes
-            FROM information_schema.tables
-            WHERE table_schema = @DatabaseName
-            """,
-            command => command.AddParameter("@DatabaseName", databaseName),
-            reader => reader.GetInt64Value("UsedBytes"),
-            cancellationToken);
-
-        return results.SingleOrDefault();
-    }
-
-    public async Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
-    {
-        ValidateIdentifier(databaseName);
-
-        var results = await QueryAsync(
-            """
-            SELECT COUNT(*) AS ActiveConnections
-            FROM information_schema.processlist
-            WHERE db = @DatabaseName
-              AND command <> 'Sleep'
-            """,
-            command => command.AddParameter("@DatabaseName", databaseName),
-            reader => reader.GetInt64Value("ActiveConnections"),
-            cancellationToken);
-
-        var count = results.SingleOrDefault();
-        return count > int.MaxValue ? int.MaxValue : (int)count;
-    }
-
-    private async Task<(string SharedLoginName, string? EncryptedPassword)> GetSharedProvisioningStateAsync(int userId, CancellationToken cancellationToken)
-    {
-        var databases = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
-        var sharedLoginName = $"raft_u{userId}";
-
-        if (databases.Count == 0)
+        if (!IsAvailable)
         {
-            return (sharedLoginName, null);
+            return 0L;
         }
 
-        var firstCredential = await _accessCredentialService.GetByDatabaseInstanceIdAsync(databases[0].DatabaseInstanceId, cancellationToken);
-        if (firstCredential is null)
-        {
-            return (sharedLoginName, null);
-        }
-
-        var encryptor = _dataProtectionProvider.CreateProtector(DataProtectionPurposes.AccessCredentialPassword);
-        var instanceReveal = await _accessCredentialService.RevealPasswordAsync(userId, databases[0].DatabaseInstanceId, cancellationToken);
-        return (sharedLoginName, instanceReveal is null ? null : encryptor.Protect(instanceReveal.Password));
-    }
-
-    private async Task CreateDatabaseAndUserAsync(
-        string databaseName,
-        string loginName,
-        string password,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteAsync($"""CREATE DATABASE IF NOT EXISTS `{databaseName}`;""", null, cancellationToken);
-        await ExecuteAsync(
-            $"""CREATE USER IF NOT EXISTS '{loginName}'@'%' IDENTIFIED BY '{password}';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync(
-            $"""ALTER USER '{loginName}'@'%' IDENTIFIED BY '{password}';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync(
-            $"""GRANT ALL PRIVILEGES ON `{databaseName}`.* TO '{loginName}'@'%';""",
-            null,
-            cancellationToken);
-        await ExecuteAsync("FLUSH PRIVILEGES;", null, cancellationToken);
-    }
-
-    private async Task SafeDeleteDatabaseAndUserAsync(string databaseName, string loginName, int userId, CancellationToken cancellationToken)
-    {
         try
         {
-            await ExecuteAsync($"""DROP DATABASE IF EXISTS `{databaseName}`;""", null, cancellationToken);
-
-            var remaining = await _dashboardService.GetByUserIdAsync(userId, cancellationToken);
-            if (remaining.Count == 0)
+            var item = await GetAbaDatabaseByNameAsync(databaseName, cancellationToken);
+            if (item is not null)
             {
-                await ExecuteAsync($"""DROP USER IF EXISTS '{loginName}'@'%';""", null, cancellationToken);
+                return (long)(item.EspacioUtilizadoMB * 1024 * 1024);
             }
         }
-        catch (Exception cleanupEx)
+        catch (Exception ex)
         {
-            _logger.LogError(cleanupEx, "Best-effort MySQL cleanup failed for database {DatabaseName}", databaseName);
+            _logger.LogWarning(ex, "Failed to query storage usage from ABA MySQL for {DatabaseName}", databaseName);
         }
+
+        return 0L;
     }
 
-    private async Task KillSessionsAsync(string databaseName, string loginName, CancellationToken cancellationToken)
+    public Task<int> GetActiveConnectionCountAsync(string databaseName, CancellationToken cancellationToken = default)
     {
-        var sessionIds = await QueryAsync(
-            """
-            SELECT ID
-            FROM information_schema.processlist
-            WHERE db = @DatabaseName
-              AND user = @LoginName
-            """,
-            command =>
-            {
-                command.AddParameter("@DatabaseName", databaseName);
-                command.AddParameter("@LoginName", loginName);
-            },
-            reader => reader.GetInt32Value("ID"),
-            cancellationToken);
-
-        foreach (var sessionId in sessionIds.Distinct())
-        {
-            await ExecuteAsync($"KILL {sessionId};", null, cancellationToken);
-        }
+        return Task.FromResult(0);
     }
 
-    private async Task UpdateStatusAsync(int databaseInstanceId, string status, CancellationToken cancellationToken)
+    private HttpClient CreateHttpClient()
     {
-        var instance = await _databaseInstanceService.GetByIdAsync(databaseInstanceId, cancellationToken)
-            ?? throw new InvalidOperationException($"Database instance {databaseInstanceId} not found.");
+        var client = _httpClientFactory.CreateClient("AbaMySql");
+        var baseUrl = _options.BaseUrl.Trim();
+        if (!baseUrl.EndsWith('/'))
+        {
+            baseUrl += "/";
+        }
+        client.BaseAddress = new Uri(baseUrl);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+        client.Timeout = TimeSpan.FromSeconds(_options.RequestTimeoutSeconds);
+        return client;
+    }
 
+    private async Task<int?> GetAbaDatabaseIdByNameAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        var item = await GetAbaDatabaseByNameAsync(databaseName, cancellationToken);
+        return item?.Id;
+    }
+
+    private async Task<AbaDatabaseItemDto?> GetAbaDatabaseByNameAsync(string databaseName, CancellationToken cancellationToken)
+    {
+        using var client = CreateHttpClient();
+        var response = await client.GetAsync("partners/databases", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        var list = JsonSerializer.Deserialize<List<AbaDatabaseItemDto>>(responseBody, JsonOptions);
+        return list?.FirstOrDefault(d => string.Equals(d.NombreBD, databaseName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task UpdateStatusAsync(
+        int databaseInstanceId,
+        DatabaseInstanceReadDto instance,
+        string status,
+        CancellationToken cancellationToken)
+    {
         await _databaseInstanceService.UpdateAsync(
             databaseInstanceId,
             new DatabaseInstanceUpdateDto
@@ -341,52 +285,83 @@ public partial class MySqlProvisioningService : IDatabaseProvisioningService
             cancellationToken);
     }
 
-    private async Task<int> ExecuteAsync(string commandText, Action<DbCommand>? configureCommand, CancellationToken cancellationToken, string? connectionString = null)
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        var connString = connectionString ?? GetConnectionString();
-        await using var connection = new MySqlConnection(connString);
-        await connection.OpenAsync(cancellationToken);
+        PropertyNameCaseInsensitive = true
+    };
 
-        using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        configureCommand?.Invoke(command);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+    private sealed class AbaCreateDatabaseResponseDto
+    {
+        [JsonPropertyName("baseDeDatosId")]
+        public int BaseDeDatosId { get; set; }
+
+        [JsonPropertyName("nombreBD")]
+        public string NombreBD { get; set; } = string.Empty;
+
+        [JsonPropertyName("usuarioBD")]
+        public string UsuarioBD { get; set; } = string.Empty;
+
+        [JsonPropertyName("passwordTemporal")]
+        public string PasswordTemporal { get; set; } = string.Empty;
+
+        [JsonPropertyName("host")]
+        public string Host { get; set; } = string.Empty;
+
+        [JsonPropertyName("puerto")]
+        public int Puerto { get; set; }
+
+        [JsonPropertyName("motor")]
+        public string Motor { get; set; } = string.Empty;
     }
 
-    private async Task<List<T>> QueryAsync<T>(string commandText, Action<DbCommand>? configureCommand, Func<DbDataReader, T> map, CancellationToken cancellationToken)
+    private sealed class AbaDatabaseItemDto
     {
-        await using var connection = new MySqlConnection(GetConnectionString());
-        await connection.OpenAsync(cancellationToken);
+        [JsonPropertyName("id")]
+        public int Id { get; set; }
 
-        using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        configureCommand?.Invoke(command);
+        [JsonPropertyName("nombreBD")]
+        public string NombreBD { get; set; } = string.Empty;
 
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var items = new List<T>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            items.Add(map(reader));
-        }
+        [JsonPropertyName("usuarioBD")]
+        public string UsuarioBD { get; set; } = string.Empty;
 
-        return items;
+        [JsonPropertyName("host")]
+        public string Host { get; set; } = string.Empty;
+
+        [JsonPropertyName("puerto")]
+        public int Puerto { get; set; }
+
+        [JsonPropertyName("estado")]
+        public string Estado { get; set; } = string.Empty;
+
+        [JsonPropertyName("espacioMaximoMB")]
+        public double EspacioMaximoMB { get; set; }
+
+        [JsonPropertyName("espacioUtilizadoMB")]
+        public double EspacioUtilizadoMB { get; set; }
+
+        [JsonPropertyName("porcentajeUsado")]
+        public double PorcentajeUsado { get; set; }
     }
 
-    private string GetConnectionString()
+    private sealed class AbaResetPasswordResponseDto
     {
-        return !string.IsNullOrWhiteSpace(_connectionStrings.MySqlProvisioning)
-            ? _connectionStrings.MySqlProvisioning
-            : throw new InvalidOperationException("Missing connection string: ConnectionStrings:MySqlProvisioning");
-    }
+        [JsonPropertyName("baseDeDatosId")]
+        public int BaseDeDatosId { get; set; }
 
-    private static void ValidateIdentifier(string identifier)
-    {
-        if (!IdentifierRegex().IsMatch(identifier))
-        {
-            throw new InvalidOperationException($"MySQL identifier '{identifier}' failed validation.");
-        }
-    }
+        [JsonPropertyName("nombreBD")]
+        public string NombreBD { get; set; } = string.Empty;
 
-    [GeneratedRegex(@"^[a-z0-9_]{1,64}$")]
-    private static partial Regex IdentifierRegex();
+        [JsonPropertyName("usuarioBD")]
+        public string UsuarioBD { get; set; } = string.Empty;
+
+        [JsonPropertyName("passwordNueva")]
+        public string PasswordNueva { get; set; } = string.Empty;
+
+        [JsonPropertyName("host")]
+        public string Host { get; set; } = string.Empty;
+
+        [JsonPropertyName("puerto")]
+        public int Puerto { get; set; }
+    }
 }

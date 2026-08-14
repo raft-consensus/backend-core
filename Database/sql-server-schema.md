@@ -1229,19 +1229,36 @@ END
 
 #### 10.2.5 `usp_AiApiKeys_Create`
 
+Crea una nueva API Key activa para el usuario. Aplica validación de cuota máxima de claves en estado `Active` (por defecto 10). Las claves en estado `Revoked` no consumen cuota.
+
 ```sql
-CREATE PROCEDURE dbo.usp_AiApiKeys_Create
+CREATE OR ALTER PROCEDURE dbo.usp_AiApiKeys_Create
     @UserId INT,
     @Name NVARCHAR(120),
     @KeyPrefix NVARCHAR(12),
-    @KeyHash NVARCHAR(128)
+    @KeyHash NVARCHAR(128),
+    @MaxActiveKeys INT = 10 -- Límite máximo de claves activas simultáneas
 AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- Validar que no exista un hash idéntico
     IF EXISTS (SELECT 1 FROM dbo.AiApiKeys WHERE KeyHash = @KeyHash)
     BEGIN
         RETURN;
+    END
+
+    -- Validar que el usuario no supere la cuota de claves ACTIVAS
+    DECLARE @ActiveCount INT;
+    SELECT @ActiveCount = COUNT(*)
+    FROM dbo.AiApiKeys
+    WHERE UserId = @UserId
+      AND Status = 'Active'
+      AND Revoked_at IS NULL;
+
+    IF @ActiveCount >= @MaxActiveKeys
+    BEGIN
+        RETURN; -- Rechazo por límite alcanzado
     END
 
     INSERT INTO dbo.AiApiKeys (UserId, Name, KeyPrefix, KeyHash, Status, Created_at)
