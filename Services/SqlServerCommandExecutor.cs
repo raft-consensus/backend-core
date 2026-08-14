@@ -40,7 +40,7 @@ public class SqlServerCommandExecutor : ISqlServerCommandExecutor
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error executing SQL Server command: {CommandText}", commandText);
+            _logger.LogError(ex, "Error executing SQL Server command.");
             throw;
         }
         finally
@@ -83,7 +83,7 @@ public class SqlServerCommandExecutor : ISqlServerCommandExecutor
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error querying SQL Server command: {CommandText}", commandText);
+            _logger.LogError(ex, "Error querying SQL Server command.");
             throw;
         }
         finally

@@ -7,6 +7,11 @@ The backend uses:
 - SQL Server as the shared core for all team backends in the VPS.
 - `ServiceResponse<T>` as the standard response wrapper.
 
+## Documentation hierarchy
+
+- `README.md` is the project overview, deployment notes, and operational guidance.
+- `API.md` is the canonical endpoint contract and should be treated as the source of truth for requests and responses.
+
 ## Code organization
 
 This backend is now organized as a modular monolith. `Program.cs` only bootstraps the app; the actual composition lives under `Modules/`.
@@ -26,7 +31,7 @@ Define these connection strings in `appsettings.json` or environment variables:
 ```json
 {
   "ConnectionStrings": {
-    "RaftDb": "Server=...;Database=...;Trusted_Connection=True;TrustServerCertificate=True;",
+    "RaftDb": "Server=...;Database=...;Trusted_Connection=True;Encrypt=True;TrustServerCertificate=False;",
     "MySqlProvisioning": "server=<mysql-host>;port=3306;database=<database>;user=<username>;password=<password>;",
     "PostgresProvisioning": "Host=<postgres-host>;Port=5432;Database=<database>;Username=<username>;Password=<password>;"
   },
@@ -37,10 +42,10 @@ Define these connection strings in `appsettings.json` or environment variables:
     "ExpirationMinutes": 60
   },
   "OAuth": {
-    "GoogleClientId": "google-client-id",
-    "GoogleClientSecret": "google-client-secret",
-    "GitHubClientId": "github-client-id",
-    "GitHubClientSecret": "github-client-secret"
+    "GoogleClientId": "<google-client-id>",
+    "GoogleClientSecret": "<google-client-secret>",
+    "GitHubClientId": "<github-client-id>",
+    "GitHubClientSecret": "<github-client-secret>"
   },
   "Frontend": {
     "BaseUrl": "http://localhost:4200",
@@ -54,11 +59,11 @@ Define these connection strings in `appsettings.json` or environment variables:
     "PasswordLength": 24
   },
   "DnsProvisioning": {
-    "ZoneId": "c1c62663d28fa916dc9bc030103e6e83",
-    "ZoneName": "andrescortes.dev",
-    "CellSubdomain": "raft",
-    "ApiToken": "replace-with-cloudflare-dns-token",
-    "DefaultContent": "49.13.85.216",
+    "ZoneId": "<cloudflare-zone-id>",
+    "ZoneName": "<zone-name>",
+    "CellSubdomain": "<cell-subdomain>",
+    "ApiToken": "<cloudflare-dns-token>",
+    "DefaultContent": "<default-ip>",
     "RecordTtl": 1,
     "Proxied": false,
     "MaxRecordsPerUser": 10,
@@ -67,35 +72,35 @@ Define these connection strings in `appsettings.json` or environment variables:
   "AiService": {
     "Providers": [
       {
-        "Name": "cell-a",
+        "Name": "<cell-a>",
         "Endpoint": "https://ai-a.example.com/v1/chat/completions",
-        "ApiKey": "provider-a-secret",
-        "Model": "gpt-4o-mini",
+        "ApiKey": "<provider-a-secret>",
+        "Model": "<model-name>",
         "Priority": 1,
         "RequestTimeoutSeconds": 30,
         "MaxOutputTokens": 512
       },
       {
-        "Name": "cell-b",
+        "Name": "<cell-b>",
         "Endpoint": "https://ai-b.example.com/v1/chat/completions",
-        "ApiKey": "provider-b-secret",
-        "Model": "gpt-4o-mini",
+        "ApiKey": "<provider-b-secret>",
+        "Model": "<model-name>",
         "Priority": 2,
         "RequestTimeoutSeconds": 30,
         "MaxOutputTokens": 512
       }
     ],
     "Endpoint": "https://api.openai.com/v1/chat/completions",
-    "ApiKey": "optional-legacy-provider-key",
-    "Model": "gpt-4o-mini",
+    "ApiKey": "<optional-legacy-provider-key>",
+    "Model": "<model-name>",
     "RequestTimeoutSeconds": 30,
     "MaxOutputTokens": 512,
     "ApiKeyRateLimitPerMinute": 20,
     "ManagementRateLimitPerMinute": 20
   },
   "N8nProvisioning": {
-    "BaseUrl": "https://api.snapshot.andrescortes.dev",
-    "ApiKey": "replace-with-n8n-provisioning-api-key",
+    "BaseUrl": "https://<n8n-provisioning-host>",
+    "ApiKey": "<n8n-provisioning-api-key>",
     "RequestTimeoutSeconds": 30
   },
   "DataProtection": {
@@ -114,7 +119,15 @@ For DNS provisioning, the runtime reads `DnsProvisioning:ZoneId`, `DnsProvisioni
 
 The Cloudflare `curl` your teammate shared is the raw DNS-create call this backend now automates. It posts an `A` record into the configured zone with a bearer token, a hostname label, the target IP, automatic TTL (`1`), and `proxied: false`.
 
-`Frontend:BaseUrl` drives the OAuth callback redirect (`{BaseUrl}{CallbackPath}#access_token=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. For CORS, `Program.cs` accepts `Frontend:Origins` first and falls back to `Frontend:BaseUrl` if that list is empty. See [`API.md`](API.md) for the exact contract.
+`Frontend:BaseUrl` drives the OAuth callback redirect (`{BaseUrl}{CallbackPath}#access_token=...&expires_at=...&provider=...`) after a successful OAuth login instead of returning JSON — the callback is reached via a full browser redirect chain, not a `fetch` call, so a JSON body would never reach the SPA's JS. For CORS, `Program.cs` accepts `Frontend:Origins` first and falls back to `Frontend:BaseUrl` if that list is empty. See [`API.md`](API.md) for the exact contract.
+
+## Password recovery
+
+`POST /api/auth/forgot-password` rotates the caller's local password and attempts to send the new temporary password by email.
+
+- The temporary password is never logged.
+- If SMTP is disabled or the mail send fails, the backend only emits a generic warning/error and does not expose the secret anywhere else.
+- The current implementation still returns the generic success response, so production environments must have SMTP working if password recovery is required.
 
 ## Roles and authorization
 
